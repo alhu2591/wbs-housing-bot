@@ -61,14 +61,18 @@ def passes_rooms(listing: dict, min_rooms: float) -> bool:
     return True if rooms is None else float(rooms) >= float(min_rooms)
 
 
-def passes_area(listing: dict, area: str) -> bool:
-    if not area:
+def passes_area(listing: dict, areas: list[str]) -> bool:
+    """
+    Returns True if listing matches ANY of the given areas.
+    Empty list = all Berlin (no filter).
+    """
+    if not areas:
         return True
-    loc = str(listing.get("location") or "").lower()
-    desc = str(listing.get("description") or "").lower()
+    loc   = str(listing.get("location") or "").lower()
+    desc  = str(listing.get("description") or "").lower()
     title = str(listing.get("title") or "").lower()
-    needle = area.lower()
-    return needle in loc or needle in desc or needle in title
+    combined = f"{loc} {desc} {title}"
+    return any(a.lower() in combined for a in areas)
 
 
 # ── ID / URL normalization ────────────────────────────────────────────────────

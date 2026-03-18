@@ -40,12 +40,16 @@ async def run_once() -> None:
     logger.info("📦 Raw listings collected: %d", len(listings))
 
     # ── 2. Load user settings ────────────────────────────────────────────────
+    import json as _json
     settings  = await get_settings(CHAT_ID)
     max_price = float(settings.get("max_price") or DEFAULT_MAX_PRICE)
     min_rooms = settings.get("min_rooms") or DEFAULT_ROOMS
-    area      = settings.get("area") or DEFAULT_AREA
     active    = bool(settings.get("active", 1))
-    wbs_only  = bool(settings.get("wbs_only", 1))
+    wbs_only  = bool(settings.get("wbs_only", 0))
+    try:
+        areas = _json.loads(settings.get("areas") or "[]")
+    except Exception:
+        areas = []
 
     if not active:
         logger.info("🔕 Notifications disabled.")
@@ -63,7 +67,7 @@ async def run_once() -> None:
             continue
         if min_rooms and not passes_rooms(listing, min_rooms):
             continue
-        if area and not passes_area(listing, area):
+        if areas and not passes_area(listing, areas):
             continue
         if await is_known(listing["id"]):
             continue

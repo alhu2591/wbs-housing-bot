@@ -59,7 +59,8 @@ _MIGRATIONS = [
     ("listings",       "available_from", "TEXT"),
     ("listings",       "features",       "TEXT DEFAULT '[]'"),
     ("listings",       "score",          "INTEGER DEFAULT 0"),
-    ("user_settings",  "wbs_only",       "INTEGER DEFAULT 1"),
+    ("user_settings",  "wbs_only",       "INTEGER DEFAULT 0"),
+    ("user_settings",  "areas",          "TEXT DEFAULT '[]'"),
 ]
 
 
@@ -188,7 +189,7 @@ async def get_settings(chat_id: str) -> dict:
             row = await cur.fetchone()
             if row:
                 return dict(row)
-    return {"chat_id": chat_id, "active": 1, "max_price": 600, "min_rooms": 0, "area": "", "wbs_only": 0}
+    return {"chat_id": chat_id, "active": 1, "max_price": 600, "min_rooms": 0, "area": "", "wbs_only": 0, "areas": "[]"}
 
 
 async def upsert_settings(chat_id: str, **kwargs) -> None:
@@ -198,12 +199,12 @@ async def upsert_settings(chat_id: str, **kwargs) -> None:
     current["updated_at"] = datetime.utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            """INSERT INTO user_settings (chat_id, active, max_price, min_rooms, area, wbs_only, updated_at)
-               VALUES (:chat_id,:active,:max_price,:min_rooms,:area,:wbs_only,:updated_at)
+            """INSERT INTO user_settings (chat_id, active, max_price, min_rooms, area, wbs_only, areas, updated_at)
+               VALUES (:chat_id,:active,:max_price,:min_rooms,:area,:wbs_only,:areas,:updated_at)
                ON CONFLICT(chat_id) DO UPDATE SET
                  active=excluded.active, max_price=excluded.max_price,
                  min_rooms=excluded.min_rooms, area=excluded.area,
-                 wbs_only=excluded.wbs_only,
+                 wbs_only=excluded.wbs_only, areas=excluded.areas,
                  updated_at=excluded.updated_at""",
             current,
         )
