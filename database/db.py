@@ -43,14 +43,17 @@ _DDL = [
         created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
     """CREATE TABLE IF NOT EXISTS user_settings (
-        chat_id     TEXT PRIMARY KEY,
-        active      INTEGER DEFAULT 1,
-        max_price   REAL    DEFAULT 600,
-        min_rooms   REAL    DEFAULT 0,
-        area        TEXT    DEFAULT '',
-        wbs_only    INTEGER DEFAULT 0,
-        areas       TEXT    DEFAULT '[]',
-        updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+        chat_id          TEXT PRIMARY KEY,
+        active           INTEGER DEFAULT 1,
+        max_price        REAL    DEFAULT 600,
+        min_rooms        REAL    DEFAULT 0,
+        area             TEXT    DEFAULT '',
+        wbs_only         INTEGER DEFAULT 0,
+        areas            TEXT    DEFAULT '[]',
+        household_size   INTEGER DEFAULT 1,
+        jobcenter_mode   INTEGER DEFAULT 0,
+        wohngeld_mode    INTEGER DEFAULT 0,
+        updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
     """CREATE TABLE IF NOT EXISTS bot_stats (
         id           INTEGER PRIMARY KEY CHECK (id = 1),
@@ -70,6 +73,9 @@ _MIGRATIONS = [
     ("listings",       "score",          "INTEGER DEFAULT 0"),
     ("user_settings",  "wbs_only",       "INTEGER DEFAULT 0"),
     ("user_settings",  "areas",          "TEXT DEFAULT '[]'"),
+    ("user_settings",  "household_size", "INTEGER DEFAULT 1"),
+    ("user_settings",  "jobcenter_mode", "INTEGER DEFAULT 0"),
+    ("user_settings",  "wohngeld_mode",  "INTEGER DEFAULT 0"),
 ]
 
 
@@ -223,6 +229,7 @@ async def get_stats() -> dict:
 _DEFAULTS = {
     "chat_id": "", "active": 1, "max_price": 600,
     "min_rooms": 0, "area": "", "wbs_only": 0, "areas": "[]",
+    "household_size": 1, "jobcenter_mode": 0, "wohngeld_mode": 0,
 }
 
 
@@ -253,12 +260,17 @@ async def upsert_settings(chat_id: str, **kwargs) -> None:
     try:
         await db.execute(
             """INSERT INTO user_settings
-               (chat_id,active,max_price,min_rooms,area,wbs_only,areas,updated_at)
-               VALUES (:chat_id,:active,:max_price,:min_rooms,:area,:wbs_only,:areas,:updated_at)
+               (chat_id,active,max_price,min_rooms,area,wbs_only,areas,
+                household_size,jobcenter_mode,wohngeld_mode,updated_at)
+               VALUES (:chat_id,:active,:max_price,:min_rooms,:area,:wbs_only,:areas,
+                       :household_size,:jobcenter_mode,:wohngeld_mode,:updated_at)
                ON CONFLICT(chat_id) DO UPDATE SET
                  active=excluded.active, max_price=excluded.max_price,
                  min_rooms=excluded.min_rooms, area=excluded.area,
                  wbs_only=excluded.wbs_only, areas=excluded.areas,
+                 household_size=excluded.household_size,
+                 jobcenter_mode=excluded.jobcenter_mode,
+                 wohngeld_mode=excluded.wohngeld_mode,
                  updated_at=excluded.updated_at""",
             current,
         )

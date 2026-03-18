@@ -10,6 +10,7 @@ import time
 from scrapers import ALL_SCRAPERS
 from scrapers.image_fetcher import fetch_og_image
 from filters import is_wbs, passes_price, passes_rooms, passes_area, score_listing, get_score_label
+from filters.social_filter import passes_jobcenter, passes_wohngeld, get_social_badge
 from filters.ai_analyzer import ai_analyze
 from filters.wbs_filter import extract_wbs_level
 from database import (
@@ -47,10 +48,13 @@ async def run_once() -> None:
         logger.error("get_settings failed: %s — using defaults", e)
         settings = {}
 
-    max_price = float(settings.get("max_price") or DEFAULT_MAX_PRICE)
-    min_rooms = float(settings.get("min_rooms") or 0)
-    active    = bool(settings.get("active", 1))
-    wbs_only  = bool(settings.get("wbs_only", 0))
+    max_price      = float(settings.get("max_price") or DEFAULT_MAX_PRICE)
+    min_rooms      = float(settings.get("min_rooms") or 0)
+    active         = bool(settings.get("active", 1))
+    wbs_only       = bool(settings.get("wbs_only", 0))
+    household_size = int(settings.get("household_size") or 1)
+    jobcenter_mode = bool(settings.get("jobcenter_mode", 0))
+    wohngeld_mode  = bool(settings.get("wohngeld_mode", 0))
     try:
         areas = json.loads(settings.get("areas") or "[]")
     except Exception:
@@ -75,6 +79,11 @@ async def run_once() -> None:
             if min_rooms and not passes_rooms(listing, min_rooms):
                 continue
             if areas and not passes_area(listing, areas):
+                continue
+            # Social filters — Jobcenter KdU and/or Wohngeld
+            if jobcenter_mode and not passes_jobcenter(listing, household_size):
+                continue
+            if wohngeld_mode and not passes_wohngeld(listing, household_size):
                 continue
             pre.append(listing)
         except Exception as e:
@@ -113,6 +122,16 @@ async def run_once() -> None:
         except Exception as e:
             listing["score"] = 0
             listing["score_label"] = "📋 عادي"
+
+        # Attach Jobcenter/Wohngeld badge for display
+        try:
+            jc_ok, wg_ok, social_badge = get_social_badge(listing, household_size)
+            listing["jobcenter_ok"]  = jc_ok
+            listing["wohngeld_ok"]   = wg_ok
+            listing["social_badge"]  = social_badge
+            listing["household_size"] = household_size
+        except Exception as e:
+            listing["social_badge"] = ""
 
         try:
             await save_listing(listing)

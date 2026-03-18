@@ -23,6 +23,10 @@ from database import (
     get_all_health, get_stats, get_recent_listings,
 )
 from filters.wbs_filter import is_wbs
+from filters.social_filter import (
+    JOBCENTER_KDU_WARMMIETE, WOHNGELD_RENT_LIMITS,
+    get_jobcenter_limit, get_wohngeld_limit, get_size_limit,
+)
 from config.settings import CHAT_ID, BOT_TOKEN, SCRAPER_API_KEY
 
 logger = logging.getLogger(__name__)
@@ -61,6 +65,8 @@ BOT_COMMANDS = [
     BotCommand("set_rooms",   "أقل غرف — مثال: /set_rooms 2 أو اضغط للخيارات"),
     BotCommand("wbs_on",      "البحث عن شقق WBS فقط"),
     BotCommand("wbs_off",     "كل الشقق (افتراضي)"),
+    BotCommand("social",      "إعدادات Jobcenter / Wohngeld"),
+    BotCommand("household",   "تحديد عدد أفراد الأسرة"),
     BotCommand("on",          "تشغيل الإشعارات"),
     BotCommand("off",         "إيقاف الإشعارات"),
     BotCommand("ping",        "فحص سرعة استجابة البوت"),
@@ -106,12 +112,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "كل شقة جديدة مع تحليل ذكي.\n\n"
         "📋 *الأوامر:*\n"
         "├ /status — الحالة والإعدادات\n"
-        "├ /areas — إدارة المناطق المفضلة\n"
-        "├ /set\\_price 550 — أقصى إيجار\n"
-        "├ /set\\_rooms 2 — أقل غرف\n"
-        "├ /wbs\\_on / /wbs\\_off — تبديل فلتر WBS\n"
+        "├ /areas — اختيار المناطق\n"
+        "├ /social — فلتر Jobcenter / Wohngeld\n"
+        "├ /household — عدد أفراد الأسرة\n"
+        "├ /set\\_price — أقصى إيجار\n"
+        "├ /set\\_rooms — أقل غرف\n"
+        "├ /wbs\\_on / /wbs\\_off — فلتر WBS\n"
         "├ /on / /off — تشغيل/إيقاف\n"
-        "└ /last — آخر 5 إعلانات\n\n"
+        "├ /stats / /last / /check\n"
+        "└ /ping / /reset\n\n"
         "✅ *البوت يعمل — استخدم الأزرار أدناه*"
     )
     await update.message.reply_text(
@@ -129,14 +138,20 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
-    s      = await get_settings(str(update.effective_chat.id))
-    areas  = _get_areas(s)
-    ai     = "✅" if os.getenv("ANTHROPIC_API_KEY") else "⚠️"
-    proxy  = "✅" if SCRAPER_API_KEY else "⚠️"
-    active = "🟢 يعمل" if s.get("active") else "🔴 موقوف"
-    wbs    = "✅ WBS فقط" if s.get("wbs_only", 0) else "🔓 كل الشقق"
-    rooms  = s.get("min_rooms") or "أي عدد"
+    s         = await get_settings(str(update.effective_chat.id))
+    areas     = _get_areas(s)
+    ai        = "✅" if os.getenv("ANTHROPIC_API_KEY") else "⚠️"
+    proxy     = "✅" if SCRAPER_API_KEY else "⚠️"
+    active    = "🟢 يعمل" if s.get("active") else "🔴 موقوف"
+    wbs       = "✅ WBS فقط" if s.get("wbs_only", 0) else "🔓 كل الشقق"
+    rooms     = s.get("min_rooms") or "أي عدد"
     areas_str = "، ".join(areas) if areas else "كل برلين 🌍"
+    n         = int(s.get("household_size") or 1)
+    jc_mode   = "✅" if s.get("jobcenter_mode") else "❌"
+    wg_mode   = "✅" if s.get("wohngeld_mode")  else "❌"
+    jc_lim    = get_jobcenter_limit(n)
+    wg_lim    = get_wohngeld_limit(n)
+    sz_lim    = get_size_limit(n)
 
     await update.message.reply_text(
         "📊 *الإعدادات الحالية*\n"
@@ -146,9 +161,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"💰 أقصى إيجار:  {s.get('max_price', 600)} €\n"
         f"🛏 أقل غرف:     {rooms}\n"
         f"📍 المناطق:      {areas_str}\n"
+        f"👨‍👩‍👧 أفراد الأسرة: {n}\n"
+        f"🏛 Jobcenter KdU: {jc_mode} حد {jc_lim:.0f}€ · {sz_lim}م²\n"
+        f"🏦 Wohngeld:     {wg_mode} حد {wg_lim:.0f}€\n"
         f"🤖 الذكاء:       {ai}\n"
         f"🌐 ScraperAPI:   {proxy}\n\n"
-        "_/areas لإدارة المناطق_",
+        "_/social لإدارة Jobcenter/Wohngeld · /household للأفراد_",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=MAIN_KEYBOARD,
     )
@@ -569,6 +587,9 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     wbs_level = listing.get("wbs_level")
     wbs_line  = f"📋 WBS:         ✅ مطلوب {wbs_level}" if wbs_level else "📋 WBS:         ❌ غير مطلوب"
 
+    # Social badge (Jobcenter / Wohngeld)
+    social_badge = listing.get("social_badge", "")
+
     # Build
     lines = [f"🏢 *{src_name}* — {src_type}\n"]
     if loc:              lines.append(f"📍 الموقع:      {loc}")
@@ -578,6 +599,7 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     if listing.get("floor"):          lines.append(f"🏢 الطابق:      {listing['floor']}")
     if listing.get("available_from"): lines.append(f"📅 الإتاحة:     {listing['available_from']}")
     lines.append(wbs_line)
+    if social_badge:     lines.append(social_badge)
 
     msg = "\n".join(lines).strip()
     if len(msg) > 1020:
@@ -593,6 +615,170 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
         rows.append([InlineKeyboardButton("📝 تقدم الآن", url=apply_url)])
 
     return msg, InlineKeyboardMarkup(rows) if rows else None
+
+
+# ── /household ────────────────────────────────────────────────────────────────
+
+async def cmd_household(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update): return await _deny(update)
+    if context.args:
+        try:
+            n = int(context.args[0])
+            assert 1 <= n <= 10
+            await upsert_settings(str(update.effective_chat.id), household_size=n)
+            jc_lim = get_jobcenter_limit(n)
+            wg_lim = get_wohngeld_limit(n)
+            sz_lim = get_size_limit(n)
+            await update.message.reply_text(
+                f"✅ *عدد أفراد الأسرة: {n}*\n\n"
+                f"🏛 حد Jobcenter: {jc_lim:.0f} € / {sz_lim} م²\n"
+                f"🏦 حد Wohngeld:  {wg_lim:.0f} €",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return
+        except (ValueError, AssertionError):
+            pass
+    # Show inline keyboard 1–6
+    rows = [[
+        InlineKeyboardButton(f"{i} فرد{'/' if i==1 else 'أفراد'[0:0]}", callback_data=f"household:{i}")
+        for i in range(j, min(j+3, 7))
+    ] for j in range(1, 7, 3)]
+    # Better labels
+    labels = ["1 فرد", "2 فرد", "3 أفراد", "4 أفراد", "5 أفراد", "6+ أفراد"]
+    rows = [
+        [InlineKeyboardButton(labels[i-1], callback_data=f"household:{i}") for i in range(1, 4)],
+        [InlineKeyboardButton(labels[i-1], callback_data=f"household:{i}") for i in range(4, 7)],
+    ]
+    s = await get_settings(str(update.effective_chat.id))
+    n = int(s.get("household_size") or 1)
+    await update.message.reply_text(
+        f"👨‍👩‍👧 *عدد أفراد الأسرة* (الحالي: {n})\n\n"
+        f"يُستخدم لحساب حدود Jobcenter و Wohngeld تلقائياً.",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def callback_household(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if str(query.from_user.id) != str(CHAT_ID):
+        return
+    n = int(query.data.split(":")[1])
+    await upsert_settings(str(query.message.chat_id), household_size=n)
+    jc_lim = get_jobcenter_limit(n)
+    wg_lim = get_wohngeld_limit(n)
+    sz_lim = get_size_limit(n)
+    await query.edit_message_text(
+        f"✅ *عدد الأفراد: {n}*\n\n"
+        f"🏛 حد Jobcenter: {jc_lim:.0f} € · {sz_lim} م²\n"
+        f"🏦 حد Wohngeld:  {wg_lim:.0f} €\n\n"
+        f"_استخدم /social لتفعيل الفلاتر_",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+# ── /social ────────────────────────────────────────────────────────────────────
+
+async def cmd_social(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update): return await _deny(update)
+    s         = await get_settings(str(update.effective_chat.id))
+    n         = int(s.get("household_size") or 1)
+    jc_active = bool(s.get("jobcenter_mode", 0))
+    wg_active = bool(s.get("wohngeld_mode",  0))
+    jc_lim    = get_jobcenter_limit(n)
+    wg_lim    = get_wohngeld_limit(n)
+    sz_lim    = get_size_limit(n)
+
+    jc_btn = f"{'✅' if jc_active else '❌'} Jobcenter KdU"
+    wg_btn = f"{'✅' if wg_active else '❌'} Wohngeld"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(jc_btn, callback_data="social:toggle_jc")],
+        [InlineKeyboardButton(wg_btn, callback_data="social:toggle_wg")],
+        [InlineKeyboardButton("👨‍👩‍👧 تغيير عدد الأفراد", callback_data="social:household")],
+        [InlineKeyboardButton("✅ حفظ وإغلاق",           callback_data="social:done")],
+    ])
+
+    await update.message.reply_text(
+        "🏛 *فلاتر Jobcenter / Wohngeld*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👨‍👩‍👧 أفراد الأسرة: *{n}*\n\n"
+        f"🏛 *Jobcenter KdU* — {'مفعّل ✅' if jc_active else 'معطّل ❌'}\n"
+        f"   الحد الأقصى: {jc_lim:.0f} € شاملة · {sz_lim} م²\n"
+        f"   يعرض فقط الشقق التي يقبلها Jobcenter\n\n"
+        f"🏦 *Wohngeld* — {'مفعّل ✅' if wg_active else 'معطّل ❌'}\n"
+        f"   الحد الأقصى: {wg_lim:.0f} €\n"
+        f"   يعرض فقط الشقق التي تندرج ضمن إعانة السكن\n\n"
+        f"_اضغط لتفعيل أو تعطيل كل فلتر:_",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=keyboard,
+    )
+
+
+async def callback_social(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if str(query.from_user.id) != str(CHAT_ID):
+        return
+
+    chat_id = str(query.message.chat_id)
+    data    = query.data  # social:toggle_jc / social:toggle_wg / social:done
+
+    s = await get_settings(chat_id)
+    n = int(s.get("household_size") or 1)
+
+    if data == "social:toggle_jc":
+        new_val = 0 if s.get("jobcenter_mode") else 1
+        await upsert_settings(chat_id, jobcenter_mode=new_val)
+        s["jobcenter_mode"] = new_val
+    elif data == "social:toggle_wg":
+        new_val = 0 if s.get("wohngeld_mode") else 1
+        await upsert_settings(chat_id, wohngeld_mode=new_val)
+        s["wohngeld_mode"] = new_val
+    elif data == "social:household":
+        await query.answer("استخدم /household لتغيير عدد الأفراد", show_alert=True)
+        return
+    elif data == "social:done":
+        jc = "✅ مفعّل" if s.get("jobcenter_mode") else "❌ معطّل"
+        wg = "✅ مفعّل" if s.get("wohngeld_mode")  else "❌ معطّل"
+        await query.edit_message_text(
+            f"✅ *تم الحفظ*\n\n"
+            f"🏛 Jobcenter: {jc}\n"
+            f"🏦 Wohngeld:  {wg}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # Refresh the social menu
+    jc_active = bool(s.get("jobcenter_mode", 0))
+    wg_active = bool(s.get("wohngeld_mode",  0))
+    jc_lim    = get_jobcenter_limit(n)
+    wg_lim    = get_wohngeld_limit(n)
+    sz_lim    = get_size_limit(n)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{'✅' if jc_active else '❌'} Jobcenter KdU", callback_data="social:toggle_jc")],
+        [InlineKeyboardButton(f"{'✅' if wg_active else '❌'} Wohngeld",      callback_data="social:toggle_wg")],
+        [InlineKeyboardButton("👨‍👩‍👧 تغيير عدد الأفراد",  callback_data="social:household")],
+        [InlineKeyboardButton("✅ حفظ وإغلاق",            callback_data="social:done")],
+    ])
+    try:
+        await query.edit_message_text(
+            "🏛 *فلاتر Jobcenter / Wohngeld*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👨‍👩‍👧 أفراد الأسرة: *{n}*\n\n"
+            f"🏛 *Jobcenter KdU* — {'مفعّل ✅' if jc_active else 'معطّل ❌'}\n"
+            f"   الحد: {jc_lim:.0f} € · {sz_lim} م²\n\n"
+            f"🏦 *Wohngeld* — {'مفعّل ✅' if wg_active else 'معطّل ❌'}\n"
+            f"   الحد: {wg_lim:.0f} €\n\n"
+            f"_اضغط لتبديل كل فلتر:_",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+        )
+    except Exception:
+        pass
 
 
 # ── /ping ─────────────────────────────────────────────────────────────────────
@@ -618,6 +804,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         str(update.effective_chat.id),
         active=1, max_price=600, min_rooms=0,
         area="", wbs_only=0, areas="[]",
+        household_size=1, jobcenter_mode=0, wohngeld_mode=0,
     )
     await update.message.reply_text(
         "🔄 *تم إعادة جميع الإعدادات للافتراضي*\n\n"
@@ -625,6 +812,9 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🛏 أقل غرف: أي عدد\n"
         "📍 المناطق: كل برلين\n"
         "🏠 الوضع: كل الشقق\n"
+        "👨‍👩‍👧 الأسرة: 1 فرد\n"
+        "🏛 Jobcenter: معطّل\n"
+        "🏦 Wohngeld: معطّل\n"
         "🔔 الإشعارات: شغّالة",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=MAIN_KEYBOARD,
@@ -653,10 +843,14 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("check_proxy",  cmd_check_proxy))
     app.add_handler(CommandHandler("ping",         cmd_ping))
     app.add_handler(CommandHandler("reset",        cmd_reset))
+    app.add_handler(CommandHandler("social",       cmd_social))
+    app.add_handler(CommandHandler("household",    cmd_household))
     # Inline callbacks
-    app.add_handler(CallbackQueryHandler(callback_area,  pattern="^area_"))
-    app.add_handler(CallbackQueryHandler(callback_price, pattern="^set_price:"))
-    app.add_handler(CallbackQueryHandler(callback_rooms, pattern="^set_rooms:"))
+    app.add_handler(CallbackQueryHandler(callback_area,      pattern="^area_"))
+    app.add_handler(CallbackQueryHandler(callback_price,     pattern="^set_price:"))
+    app.add_handler(CallbackQueryHandler(callback_rooms,     pattern="^set_rooms:"))
+    app.add_handler(CallbackQueryHandler(callback_social,    pattern="^social:"))
+    app.add_handler(CallbackQueryHandler(callback_household, pattern="^household:"))
     # Persistent reply keyboard
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     return app
