@@ -430,10 +430,6 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     # ── Build message ─────────────────────────────────────────────────────────
     lines = []
 
-    # Urgency header
-    if is_urgent:
-        lines.append("🔥 *متاح فوراً — تصرف الآن\\!*\n")
-
     # Company header — first line after photo
     lines.append(f"🏢 *{src_name}* — {src_type}\n")
 
@@ -450,8 +446,6 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
         lines.append(f"🏢 الطابق:      {listing['floor']}")
     if listing.get("available_from"):
         lines.append(f"📅 الإتاحة:     {listing['available_from']}")
-    if feat_line:
-        lines.append(f"🏷 المميزات:    {feat_line}")
 
     # WBS — always shown
     lines.append(wbs_line)
