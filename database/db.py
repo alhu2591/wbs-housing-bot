@@ -36,7 +36,7 @@ _DDL = [
         max_price   REAL    DEFAULT 600,
         min_rooms   REAL    DEFAULT 0,
         area        TEXT    DEFAULT '',
-        wbs_only    INTEGER DEFAULT 1,
+        wbs_only    INTEGER DEFAULT 0,
         updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """,
@@ -188,7 +188,7 @@ async def get_settings(chat_id: str) -> dict:
             row = await cur.fetchone()
             if row:
                 return dict(row)
-    return {"chat_id": chat_id, "active": 1, "max_price": 600, "min_rooms": 0, "area": "", "wbs_only": 1}
+    return {"chat_id": chat_id, "active": 1, "max_price": 600, "min_rooms": 0, "area": "", "wbs_only": 0}
 
 
 async def upsert_settings(chat_id: str, **kwargs) -> None:

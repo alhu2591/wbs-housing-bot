@@ -28,10 +28,11 @@ SYSTEM_PROMPT = """أنت محلل إعلانات شقق ألمانية متخص
   ["بلكونة","تراس","حديقة","مصعد","مطبخ مجهز","مخزن","موقف سيارة","بدون عوائق","بناء جديد","أول سكن","غسالة","حمام إضافي"]
 - apply_url: رابط التقديم المباشر إذا كان مختلفاً عن رابط الإعلان (نادراً ما يوجد)
 - district: الحي بالألمانية مثل "Spandau" أو "Mitte" (من العنوان أو الوصف)
+- wbs_level: رقم WBS المطلوب كنص مثل "WBS 100" أو "WBS 140" أو "WBS 160" أو "WBS مطلوب" إذا مذكور WBS بدون رقم، أو null إذا لم يُذكر WBS أبداً
 - summary_ar: جملة واحدة بالعربية الفصيحة تصف الشقة باختصار مفيد
 
 تنسيق الإخراج — JSON فقط بلا أي نص آخر:
-{"price":520,"rooms":2,"size_m2":62,"floor":"الطابق 3","is_urgent":true,"available_from":"فوري","features":["بلكونة","مصعد"],"district":"Spandau","apply_url":null,"summary_ar":"شقة غرفتين مع بلكونة ومصعد"}"""
+{"price":520,"rooms":2,"size_m2":62,"floor":"الطابق 3","is_urgent":true,"available_from":"فوري","features":["بلكونة","مصعد"],"district":"Spandau","apply_url":null,"wbs_level":"WBS 100","summary_ar":"شقة غرفتين مع بلكونة ومصعد"}"""
 
 
 async def ai_analyze(listing: dict) -> dict:
@@ -81,7 +82,7 @@ async def ai_analyze(listing: dict) -> dict:
             # Merge: only overwrite if AI found a real value
             for key in ("price", "rooms", "size_m2", "floor",
                         "available_from", "is_urgent", "features",
-                        "district", "apply_url", "summary_ar"):
+                        "district", "apply_url", "wbs_level", "summary_ar"):
                 val = parsed.get(key)
                 if val is not None and val != [] and val != "":
                     listing[key] = val

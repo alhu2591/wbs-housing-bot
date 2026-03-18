@@ -73,8 +73,14 @@ async def run_once() -> None:
     # ── 4. AI enrich (rate-limited by semaphore inside ai_analyze) ───────────
     enriched = []
     for listing in candidates:
-        listing          = await ai_analyze(listing)
-        listing["score"] = score_listing(listing)
+        listing = await ai_analyze(listing)
+
+        # If AI didn't extract wbs_level, fall back to regex
+        if not listing.get("wbs_level"):
+            from filters import extract_wbs_level
+            listing["wbs_level"] = extract_wbs_level(listing)
+
+        listing["score"]       = score_listing(listing)
         listing["score_label"] = get_score_label(listing["score"])
         await save_listing(listing)
         enriched.append(listing)

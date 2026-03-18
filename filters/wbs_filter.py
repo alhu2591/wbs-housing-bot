@@ -159,10 +159,31 @@ def extract_available(text: str) -> str | None:
     return None
 
 
-def extract_features(text: str) -> list[str]:
-    """Return list of detected Arabic feature labels."""
-    text_l = text.lower()
-    return [label for kw, label in FEATURE_KEYWORDS.items() if kw in text_l]
+def extract_wbs_level(listing: dict) -> str | None:
+    """
+    Extract WBS level from listing. Returns e.g.:
+    'WBS 100', 'WBS 140', 'WBS 160', 'WBS مطلوب', or None.
+    """
+    import re as _re
+
+    haystack = " ".join(
+        str(listing.get(f) or "").lower()
+        for f in ("title", "description", "wbs_label", "summary_ar")
+    )
+
+    has_wbs_number  = bool(_re.search(r"wbs[\s\-_]*\d{2,3}", haystack))
+    has_wbs_keyword = any(kw in haystack for kw in WBS_KEYWORDS)
+    is_trusted      = bool(listing.get("trusted_wbs"))
+
+    if not has_wbs_number and not has_wbs_keyword and not is_trusted:
+        return None
+
+    # Extract specific number
+    m = _re.search(r"wbs[\s\-_]*(\d{2,3})", haystack)
+    if m:
+        return f"WBS {m.group(1)}"
+
+    return "WBS مطلوب"
 
 
 def enrich(listing: dict) -> dict:

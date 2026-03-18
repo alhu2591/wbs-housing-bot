@@ -35,8 +35,8 @@ BOT_COMMANDS = [
     BotCommand("set_price",    "أقصى إيجار — مثال: /set_price 550"),
     BotCommand("set_rooms",    "أقل غرف — مثال: /set_rooms 2"),
     BotCommand("set_area",     "تحديد الحي — مثال: /set_area Spandau"),
-    BotCommand("wbs_on",       "البحث عن شقق WBS فقط ✅"),
-    BotCommand("wbs_off",      "البحث عن كل الشقق بدون قيد WBS"),
+    BotCommand("wbs_on",       "البحث عن شقق WBS فقط"),
+    BotCommand("wbs_off",      "البحث عن كل الشقق ✅ افتراضي"),
     BotCommand("on",           "تشغيل الإشعارات"),
     BotCommand("off",          "إيقاف الإشعارات"),
 ]
@@ -109,7 +109,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     ai       = "✅ مفعّل" if os.getenv("ANTHROPIC_API_KEY") else "⚠️ غير مفعّل"
     proxy    = "✅ مفعّل" if SCRAPER_API_KEY else "⚠️ غير مفعّل"
     active   = "🟢 يعمل" if s.get("active") else "🔴 موقوف"
-    wbs_mode = "✅ WBS فقط" if s.get("wbs_only", 1) else "🔓 كل الشقق"
+    wbs_mode = "✅ WBS فقط" if s.get("wbs_only", 0) else "🔓 كل الشقق (افتراضي)"
     area     = s.get("area") or "كل برلين"
     rooms    = s.get("min_rooms") or "أي عدد"
     await update.message.reply_text(
@@ -238,7 +238,7 @@ async def cmd_wbs_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await upsert_settings(str(update.effective_chat.id), wbs_only=1)
     await update.message.reply_text(
         "✅ *وضع WBS فقط مفعّل*\n\n"
-        "سأرسل فقط الشقق التي تتطلب WBS 100.\n"
+        "سأرسل فقط الشقق التي تتطلب WBS.\n"
         "لعرض كل الشقق: /wbs\\_off",
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -248,9 +248,9 @@ async def cmd_wbs_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not _is_owner(update): return await _deny(update)
     await upsert_settings(str(update.effective_chat.id), wbs_only=0)
     await update.message.reply_text(
-        "🔓 *وضع كل الشقق مفعّل*\n\n"
-        "سأرسل جميع الشقق المتاحة بغض النظر عن WBS.\n\n"
-        "⚠️ _ستزيد الإشعارات بشكل كبير._\n"
+        "🔓 *وضع كل الشقق مفعّل* \\(الوضع الافتراضي\\)\n\n"
+        "سأرسل جميع الشقق المتاحة.\n"
+        "كل إعلان يوضح إذا كان يحتاج WBS أم لا.\n\n"
         "للعودة لـ WBS فقط: /wbs\\_on",
         parse_mode=ParseMode.MARKDOWN,
     )
@@ -445,9 +445,12 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     msg += _row("📅", "الإتاحة:",     listing.get("available_from"))
     msg += _row("🏷", "المميزات:",    feat_line)
 
-    # WBS badge — show clearly whether listing requires WBS or not
-    has_wbs = listing.get("trusted_wbs") or listing.get("wbs_label") or is_wbs(listing)
-    wbs_line = "📋 WBS 100:    ✅ مطلوب\n" if has_wbs else "📋 WBS 100:    ❌ غير مطلوب\n"
+    # ── WBS badge ─────────────────────────────────────────────────────────────
+    wbs_level = listing.get("wbs_level")
+    if wbs_level:
+        wbs_line = f"📋 {wbs_level}:   ✅ مطلوب\n"
+    else:
+        wbs_line = "📋 WBS:        ❌ غير مطلوب\n"
     msg += wbs_line
     msg += f"🎯 التقييم:    {_badge(score)}\n"
 
