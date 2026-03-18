@@ -454,6 +454,11 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     msg += wbs_line
     msg += f"🎯 التقييم:    {_badge(score)}\n"
 
+    # Telegram caption limit = 1024 chars — truncate gracefully
+    msg = msg.strip()
+    if len(msg) > 1020:
+        msg = msg[:1017] + "…"
+
     # ── Buttons ───────────────────────────────────────────────────────────────
     view_url  = listing.get("url", "")
     apply_url = listing.get("apply_url", "")

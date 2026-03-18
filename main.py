@@ -86,7 +86,24 @@ async def main() -> None:
     # ── Notification callback ─────────────────────────────────────────────────
     async def notify(listing: dict) -> None:
         text, keyboard = format_listing(listing)
+        image_url = listing.get("image_url")
         try:
+            if image_url:
+                # Send photo with caption — shows image inline in chat
+                try:
+                    await app.bot.send_photo(
+                        chat_id=CHAT_ID,
+                        photo=image_url,
+                        caption=text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=keyboard,
+                    )
+                    return
+                except TelegramError:
+                    # Image URL may be invalid or blocked — fall through to text
+                    pass
+
+            # Fallback: text only with link preview
             await app.bot.send_message(
                 chat_id=CHAT_ID,
                 text=text,

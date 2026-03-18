@@ -28,6 +28,7 @@ LOG_DIR: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
 LISTING_TTL_DAYS: int = 30
 
 WBS_KEYWORDS: list[str] = [
+    # Generic WBS mentions
     "wbs erforderlich",
     "nur mit wbs",
     "wohnberechtigungsschein",
@@ -36,8 +37,18 @@ WBS_KEYWORDS: list[str] = [
     "sozialer wohnungsbau",
     "geförderte wohnung",
     "öffentlich gefördert",
-    "wbs 100",
-    "wbs100",
+    "mit wbs",
+    "wbs notwendig",
+    "wbs benötigt",
+    "wbs vorlegen",
+    "wbs pflicht",
+    # All known WBS levels
+    "wbs 100", "wbs100",
+    "wbs 140", "wbs140",
+    "wbs 160", "wbs160",
+    "wbs 180", "wbs180",
+    "wbs 200", "wbs200",
+    "wbs 220", "wbs220",
 ]
 
 REQUEST_TIMEOUT: int = 20

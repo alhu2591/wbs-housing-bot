@@ -7,6 +7,7 @@ import logging
 import time
 
 from scrapers import ALL_SCRAPERS
+from scrapers.image_fetcher import fetch_og_image
 from filters import is_wbs, passes_price, passes_rooms, passes_area, score_listing, get_score_label
 from filters.ai_analyzer import ai_analyze
 from database import (
@@ -82,6 +83,11 @@ async def run_once() -> None:
 
         listing["score"]       = score_listing(listing)
         listing["score_label"] = get_score_label(listing["score"])
+
+        # Fetch preview image (non-blocking, best-effort)
+        if not listing.get("image_url"):
+            listing["image_url"] = await fetch_og_image(listing.get("url", ""))
+
         await save_listing(listing)
         enriched.append(listing)
 

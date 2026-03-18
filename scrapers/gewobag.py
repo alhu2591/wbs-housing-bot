@@ -122,3 +122,28 @@ async def scrape() -> list[dict]:
         logger.error("[%s] scrape failed: %s", SOURCE, e)
     logger.info("[%s] found %d listings", SOURCE, len(results))
     return results
+
+
+async def _fetch_image(url: str, client) -> str | None:
+    """Try to extract OG image from listing page."""
+    try:
+        from bs4 import BeautifulSoup
+        html = await fetch(url, client, render_js=False)
+        if not html:
+            return None
+        soup = BeautifulSoup(html, "lxml")
+        for sel in [
+            'meta[property="og:image"]',
+            'meta[name="og:image"]',
+            'meta[property="twitter:image"]',
+            '.listing-image img', '.apartment-image img',
+            'article img', '.gallery img',
+        ]:
+            tag = soup.select_one(sel)
+            if tag:
+                src = tag.get("content") or tag.get("src") or ""
+                if src and src.startswith("http"):
+                    return src
+    except Exception:
+        pass
+    return None
