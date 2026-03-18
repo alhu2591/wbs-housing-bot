@@ -1,5 +1,5 @@
 """
-Base scraper — async HTTP with ScraperAPI (residential IPs + JS rendering).
+Base scraper — async HTTP with ScraperAPI + retry + UA rotation.
 """
 import asyncio
 import logging
@@ -8,10 +8,7 @@ from typing import Optional
 from urllib.parse import urlencode
 
 import httpx
-from config.settings import (
-    REQUEST_TIMEOUT, MAX_RETRIES,
-    RETRY_WAIT_MIN, PROXY_URL, SCRAPER_API_KEY,
-)
+from config.settings import REQUEST_TIMEOUT, MAX_RETRIES, RETRY_WAIT_MIN, PROXY_URL, SCRAPER_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +17,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
     "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
 ]
 
 
@@ -38,13 +36,8 @@ def random_headers() -> dict:
 
 
 def _wrap_url(url: str, render_js: bool = False) -> str:
-    """
-    Route through ScraperAPI when key is set.
-    render_js=True: uses headless Chrome (needed for JS-rendered sites).
-    render_js=False: plain HTTP (faster, uses fewer credits).
-    """
     if SCRAPER_API_KEY:
-        params = {
+        params: dict = {
             "api_key": SCRAPER_API_KEY,
             "url": url,
             "country_code": "de",
@@ -60,62 +53,53 @@ def build_client() -> httpx.AsyncClient:
     proxies = {"all://": PROXY_URL} if PROXY_URL else None
     return httpx.AsyncClient(
         headers=random_headers(),
-        timeout=60,          # JS rendering needs longer timeout
+        timeout=60,
         follow_redirects=True,
         proxies=proxies,
     )
 
 
-async def fetch(
-    url: str,
-    client: Optional[httpx.AsyncClient] = None,
-    render_js: bool = False,
-) -> Optional[str]:
-    wrapped = _wrap_url(url, render_js=render_js)
-    own_client = client is None
-    if own_client:
+async def fetch(url: str, client: Optional[httpx.AsyncClient] = None, render_js: bool = False) -> Optional[str]:
+    wrapped   = _wrap_url(url, render_js=render_js)
+    own       = client is None
+    if own:
         client = build_client()
     try:
         for attempt in range(MAX_RETRIES):
             try:
                 resp = await client.get(wrapped, headers=random_headers())
                 resp.raise_for_status()
-                html = resp.text
-                # Sanity check — JS sites return tiny HTML without render
-                if len(html) < 500:
-                    logger.warning("%s returned only %d chars (possibly JS-only)", url, len(html))
-                return html
+                if len(resp.text) < 200:
+                    logger.warning("Short response (%d chars) for %s", len(resp.text), url[:60])
+                return resp.text
             except httpx.HTTPStatusError as e:
                 code = e.response.status_code
                 if code in (403, 429, 503) and attempt < MAX_RETRIES - 1:
                     wait = RETRY_WAIT_MIN * (2 ** attempt) + random.uniform(0, 2)
-                    logger.warning("HTTP %d %s — retry %d in %.1fs", code, url, attempt+1, wait)
+                    logger.warning("HTTP %d %s — retry %d in %.1fs", code, url[:50], attempt+1, wait)
                     await asyncio.sleep(wait)
-                    continue
-                raise
+                else:
+                    raise
             except (httpx.TimeoutException, httpx.ConnectError) as e:
                 if attempt < MAX_RETRIES - 1:
                     wait = RETRY_WAIT_MIN * (2 ** attempt)
-                    logger.warning("Timeout %s — retry in %.1fs", url, wait)
+                    logger.warning("Timeout %s — retry in %.1fs", url[:50], wait)
                     await asyncio.sleep(wait)
-                    continue
-                raise
+                else:
+                    raise
         return None
     except Exception as e:
-        logger.warning("fetch failed %s -> %s", url, e)
+        logger.warning("fetch failed %s → %s", url[:60], e)
         return None
     finally:
-        if own_client:
+        if own:
             await client.aclose()
 
 
-async def fetch_json(
-    url: str,
-    client: Optional[httpx.AsyncClient] = None,
-) -> Optional[dict | list]:
+async def fetch_json(url: str, client: Optional[httpx.AsyncClient] = None) -> Optional[dict | list]:
     wrapped = _wrap_url(url, render_js=False)
-    own_client = client is None
-    if own_client:
+    own     = client is None
+    if own:
         client = build_client()
     try:
         hdrs = {**random_headers(), "Accept": "application/json, */*"}
@@ -123,8 +107,8 @@ async def fetch_json(
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
-        logger.warning("fetch_json failed %s -> %s", url, e)
+        logger.warning("fetch_json failed %s → %s", url[:60], e)
         return None
     finally:
-        if own_client:
+        if own:
             await client.aclose()

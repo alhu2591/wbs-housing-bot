@@ -1,5 +1,5 @@
 """
-Health tracking — records last run time, listing count, and errors per scraper source.
+Scraper health tracking — last run, listing count, errors per source.
 """
 import aiosqlite
 import logging
@@ -16,8 +16,8 @@ CREATE TABLE IF NOT EXISTS scraper_health (
     listings_found  INTEGER DEFAULT 0,
     total_runs      INTEGER DEFAULT 0,
     total_errors    INTEGER DEFAULT 0,
-    last_error      TEXT DEFAULT '',
-    status          TEXT DEFAULT 'unknown'
+    last_error      TEXT    DEFAULT '',
+    status          TEXT    DEFAULT 'unknown'
 );
 """
 
@@ -33,14 +33,15 @@ async def record_success(source: str, count: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            INSERT INTO scraper_health (source, last_run, last_success, listings_found, total_runs, status)
-            VALUES (?, ?, ?, ?, 1, 'ok')
+            INSERT INTO scraper_health
+              (source, last_run, last_success, listings_found, total_runs, status)
+            VALUES (?,?,?,?,1,'ok')
             ON CONFLICT(source) DO UPDATE SET
-                last_run       = excluded.last_run,
-                last_success   = excluded.last_success,
-                listings_found = excluded.listings_found,
-                total_runs     = total_runs + 1,
-                status         = 'ok'
+              last_run      = excluded.last_run,
+              last_success  = excluded.last_success,
+              listings_found= excluded.listings_found,
+              total_runs    = total_runs + 1,
+              status        = 'ok'
             """,
             (source, now, now, count),
         )
@@ -52,14 +53,15 @@ async def record_error(source: str, error: str) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            INSERT INTO scraper_health (source, last_run, total_runs, total_errors, last_error, status)
-            VALUES (?, ?, 1, 1, ?, 'error')
+            INSERT INTO scraper_health
+              (source, last_run, total_runs, total_errors, last_error, status)
+            VALUES (?,?,1,1,?,'error')
             ON CONFLICT(source) DO UPDATE SET
-                last_run     = excluded.last_run,
-                total_runs   = total_runs + 1,
-                total_errors = total_errors + 1,
-                last_error   = excluded.last_error,
-                status       = 'error'
+              last_run     = excluded.last_run,
+              total_runs   = total_runs + 1,
+              total_errors = total_errors + 1,
+              last_error   = excluded.last_error,
+              status       = 'error'
             """,
             (source, now, str(error)[:300]),
         )
@@ -72,5 +74,4 @@ async def get_all_health() -> list[dict]:
         async with db.execute(
             "SELECT * FROM scraper_health ORDER BY source"
         ) as cur:
-            rows = await cur.fetchall()
-            return [dict(r) for r in rows]
+            return [dict(r) for r in await cur.fetchall()]
