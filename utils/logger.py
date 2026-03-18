@@ -1,4 +1,5 @@
 import logging
+import logging.handlers   # ← كان ناقصاً — يسبب crash عند التشغيل
 import os
 from config.settings import LOG_DIR
 
@@ -7,18 +8,20 @@ def setup_logging() -> None:
     os.makedirs(LOG_DIR, exist_ok=True)
     log_file = os.path.join(LOG_DIR, "bot.log")
 
-    fmt = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    fmt     = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
-    handlers = [
-        logging.StreamHandler(),
-        logging.handlers.RotatingFileHandler(
-            log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
-        ),
-    ]
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    try:
+        handlers.append(
+            logging.handlers.RotatingFileHandler(
+                log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+            )
+        )
+    except OSError:
+        pass   # /tmp may not support file logging on some hosts
 
     logging.basicConfig(level=logging.INFO, format=fmt, datefmt=datefmt, handlers=handlers)
 
-    # Silence noisy third-party loggers
-    for noisy in ("httpx", "httpcore", "telegram", "apscheduler"):
+    for noisy in ("httpx", "httpcore", "telegram", "apscheduler", "hpack"):
         logging.getLogger(noisy).setLevel(logging.WARNING)

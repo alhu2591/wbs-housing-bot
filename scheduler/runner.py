@@ -1,8 +1,10 @@
 """
-Scheduler — scrape, AI-analyze, filter, deduplicate, notify.
+Scheduler — scrape → AI-analyze → filter → dedup → notify.
+Includes per-cycle timing and heartbeat logging.
 """
 import asyncio
 import logging
+import time
 
 from scrapers import ALL_SCRAPERS
 from filters import is_wbs, passes_price, passes_rooms, passes_area, score_listing, get_score_label
@@ -13,8 +15,9 @@ from database import (
 )
 from config.settings import CHAT_ID, DEFAULT_MAX_PRICE, DEFAULT_ROOMS, DEFAULT_AREA
 
-logger = logging.getLogger(__name__)
+logger           = logging.getLogger(__name__)
 _notify_callback = None
+_cycle_count     = 0
 
 
 def set_notify_callback(fn):
@@ -23,13 +26,19 @@ def set_notify_callback(fn):
 
 
 async def run_once() -> None:
-    logger.info("⏳ Scrape cycle — %d sources", len(ALL_SCRAPERS))
-    tasks = [asyncio.create_task(_safe_scrape(fn)) for fn in ALL_SCRAPERS]
+    global _cycle_count
+    _cycle_count += 1
+    t0 = time.monotonic()
+
+    logger.info("⏳ Cycle #%d — scraping %d sources", _cycle_count, len(ALL_SCRAPERS))
+
+    # ── 1. Scrape all sources concurrently ───────────────────────────────────
+    tasks      = [asyncio.create_task(_safe_scrape(fn)) for fn in ALL_SCRAPERS]
     all_results = await asyncio.gather(*tasks)
+    listings   = [item for batch in all_results for item in batch]
+    logger.info("📦 Raw listings collected: %d", len(listings))
 
-    listings = [item for batch in all_results for item in batch]
-    logger.info("📦 Raw listings: %d", len(listings))
-
+    # ── 2. Load user settings ────────────────────────────────────────────────
     settings  = await get_settings(CHAT_ID)
     max_price = float(settings.get("max_price") or DEFAULT_MAX_PRICE)
     min_rooms = settings.get("min_rooms") or DEFAULT_ROOMS
@@ -37,10 +46,12 @@ async def run_once() -> None:
     active    = bool(settings.get("active", 1))
 
     if not active:
+        logger.info("🔕 Notifications disabled.")
         await increment_stats(cycle=1)
         return
 
-    new_listings = []
+    # ── 3. Filter ─────────────────────────────────────────────────────────────
+    candidates = []
     for listing in listings:
         if not listing.get("trusted_wbs") and not is_wbs(listing):
             continue
@@ -52,31 +63,42 @@ async def run_once() -> None:
             continue
         if await is_known(listing["id"]):
             continue
+        candidates.append(listing)
 
-        # AI analysis — enriches price, rooms, size, floor, features, summary
-        listing = await ai_analyze(listing)
+    logger.info("🔍 Candidates after filter/dedup: %d", len(candidates))
 
-        listing["score"]       = score_listing(listing)
+    # ── 4. AI enrich (rate-limited by semaphore inside ai_analyze) ───────────
+    enriched = []
+    for listing in candidates:
+        listing          = await ai_analyze(listing)
+        listing["score"] = score_listing(listing)
         listing["score_label"] = get_score_label(listing["score"])
-
         await save_listing(listing)
-        new_listings.append(listing)
+        enriched.append(listing)
 
-    new_listings.sort(key=lambda x: x.get("score", 0), reverse=True)
-    logger.info("🆕 New listings to notify: %d", len(new_listings))
+    # ── 5. Sort best first ────────────────────────────────────────────────────
+    enriched.sort(key=lambda x: x.get("score", 0), reverse=True)
 
+    # ── 6. Notify ─────────────────────────────────────────────────────────────
     sent = 0
-    if _notify_callback and new_listings:
-        for listing in new_listings:
+    if _notify_callback and enriched:
+        for listing in enriched:
             try:
                 await _notify_callback(listing)
                 sent += 1
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.5)   # Telegram flood guard
             except Exception as e:
-                logger.error("Notify failed %s: %s", listing.get("url"), e)
+                logger.error("Notify failed %s: %s", listing.get("url","")[:60], e)
 
+    # ── 7. Housekeeping ───────────────────────────────────────────────────────
     await increment_stats(sent=sent, cycle=1)
     await purge_old_listings()
+
+    elapsed = time.monotonic() - t0
+    logger.info(
+        "✅ Cycle #%d done in %.1fs — %d sent | %d raw | %d new",
+        _cycle_count, elapsed, sent, len(listings), len(enriched),
+    )
 
 
 async def _safe_scrape(fn) -> list:

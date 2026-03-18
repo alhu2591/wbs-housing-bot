@@ -1,20 +1,42 @@
 """
-Telegram bot — professional Arabic UI, AI-enriched listings, inline buttons.
+Telegram bot — professional Arabic UI.
+Company name first · AI summary · Dual inline buttons · /last command.
 """
 import logging
+import os
 from datetime import datetime
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand,
+)
 from telegram.ext import (
     ContextTypes, CommandHandler,
     ApplicationBuilder, Application,
 )
 from telegram.constants import ParseMode
 
-from database import get_settings, upsert_settings, get_all_health, get_stats
+from database import (
+    get_settings, upsert_settings,
+    get_all_health, get_stats, get_recent_listings,
+)
 from config.settings import CHAT_ID, BOT_TOKEN, SCRAPER_API_KEY
 
 logger = logging.getLogger(__name__)
+
+# ── Commands registered in Telegram menu ─────────────────────────────────────
+BOT_COMMANDS = [
+    BotCommand("start",        "تشغيل البوت وعرض المساعدة"),
+    BotCommand("status",       "الحالة الحالية والإعدادات"),
+    BotCommand("stats",        "إحصائيات البوت"),
+    BotCommand("last",         "آخر 5 إعلانات تم رصدها"),
+    BotCommand("check",        "صحة جميع المصادر"),
+    BotCommand("check_proxy",  "اختبار ScraperAPI"),
+    BotCommand("set_price",    "تحديد أقصى إيجار — مثال: /set_price 550"),
+    BotCommand("set_rooms",    "أقل عدد غرف — مثال: /set_rooms 2"),
+    BotCommand("set_area",     "تحديد الحي — مثال: /set_area Spandau"),
+    BotCommand("on",           "تشغيل الإشعارات"),
+    BotCommand("off",          "إيقاف الإشعارات"),
+]
 
 
 # ── Access guard ──────────────────────────────────────────────────────────────
@@ -26,6 +48,22 @@ async def _deny(update: Update) -> None:
     await update.message.reply_text("⛔ غير مصرح.")
 
 
+# ── Helper ────────────────────────────────────────────────────────────────────
+
+def _time_ago(iso: str | None) -> str:
+    if not iso:
+        return "—"
+    try:
+        dt   = datetime.fromisoformat(iso)
+        diff = int((datetime.utcnow() - dt).total_seconds())
+        if diff < 60:       return f"منذ {diff} ث"
+        elif diff < 3600:   return f"منذ {diff // 60} د"
+        elif diff < 86400:  return f"منذ {diff // 3600} س"
+        else:               return f"منذ {diff // 86400} يوم"
+    except Exception:
+        return "—"
+
+
 # ── /start ────────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -34,45 +72,51 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "🏠 *بوت شقق WBS برلين*\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "أراقب أكثر من *10 مواقع* كل دقيقتين "
-        "وأرسل لك فوراً كل شقة WBS جديدة مع تحليل ذكي كامل.\n\n"
-        "⚙️ *الأوامر:*\n"
+        "أراقب أكثر من *10 مواقع* كل دقيقتين وأرسل لك "
+        "كل شقة WBS جديدة مع تحليل ذكي كامل.\n\n"
+        "📋 *الأوامر:*\n"
         "├ /status — الحالة والإعدادات\n"
         "├ /stats — إحصائيات البوت\n"
+        "├ /last — آخر 5 إعلانات\n"
         "├ /check — صحة المصادر\n"
         "├ /check\\_proxy — اختبار ScraperAPI\n"
-        "├ /set\\_price 550 — أقصى إيجار (€)\n"
-        "├ /set\\_rooms 2 — أقل عدد غرف\n"
+        "├ /set\\_price 550 — أقصى إيجار\n"
+        "├ /set\\_rooms 2 — أقل غرف\n"
         "├ /set\\_area Spandau — تحديد الحي\n"
-        "├ /on — تشغيل الإشعارات\n"
-        "└ /off — إيقاف الإشعارات\n\n"
+        "├ /on و /off — تشغيل/إيقاف الإشعارات\n"
+        "└ /help — هذه الرسالة\n\n"
         "✅ *البوت يعمل — يبحث كل 2 دقيقة*"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+# ── /help ─────────────────────────────────────────────────────────────────────
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await cmd_start(update, context)
 
 
 # ── /status ───────────────────────────────────────────────────────────────────
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
-    s = await get_settings(str(update.effective_chat.id))
-    import os
-    ai_status  = "✅ مفعّل (تحليل ذكي)" if os.getenv("ANTHROPIC_API_KEY") else "⚠️ غير مفعّل (regex)"
-    proxy      = "✅ مفعّل" if SCRAPER_API_KEY else "⚠️ غير مفعّل"
-    active     = "🟢 يعمل" if s.get("active") else "🔴 موقوف"
-    area       = s.get("area") or "كل برلين"
-    rooms      = s.get("min_rooms") or "أي عدد"
-    text = (
+    s      = await get_settings(str(update.effective_chat.id))
+    ai     = "✅ مفعّل" if os.getenv("ANTHROPIC_API_KEY") else "⚠️ غير مفعّل"
+    proxy  = "✅ مفعّل" if SCRAPER_API_KEY else "⚠️ غير مفعّل"
+    active = "🟢 يعمل" if s.get("active") else "🔴 موقوف"
+    area   = s.get("area") or "كل برلين"
+    rooms  = s.get("min_rooms") or "أي عدد"
+    await update.message.reply_text(
         "📊 *الإعدادات الحالية*\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🔔 الإشعارات:    {active}\n"
         f"💰 أقصى إيجار:  {s.get('max_price', 600)} €\n"
         f"🛏 أقل غرف:     {rooms}\n"
         f"📍 المنطقة:      {area}\n"
-        f"🤖 الذكاء:       {ai_status}\n"
-        f"🌐 ScraperAPI:   {proxy}"
+        f"🤖 الذكاء:       {ai}\n"
+        f"🌐 ScraperAPI:   {proxy}",
+        parse_mode=ParseMode.MARKDOWN,
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 
 # ── /stats ────────────────────────────────────────────────────────────────────
@@ -80,17 +124,65 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
     st = await get_stats()
-    last = st.get("last_sent_at")
-    last_str = _time_ago(last) if last else "لم يُرسل بعد"
-    text = (
+    await update.message.reply_text(
         "📈 *إحصائيات البوت*\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📨 إشعارات مُرسلة:   {st.get('total_sent', 0)}\n"
         f"🔄 دورات كشط:       {st.get('total_cycles', 0)}\n"
         f"🗃 إعلانات محفوظة:  {st.get('db_size', 0)}\n"
-        f"🕐 آخر إشعار:       {last_str}"
+        f"🕐 آخر إشعار:       {_time_ago(st.get('last_sent_at'))}",
+        parse_mode=ParseMode.MARKDOWN,
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+# ── /last ─────────────────────────────────────────────────────────────────────
+
+SOURCE_LABELS = {
+    "gewobag":            "Gewobag 🏛",
+    "degewo":             "Degewo 🏛",
+    "howoge":             "Howoge 🏛",
+    "stadtundland":       "Stadt und Land 🏛",
+    "deutschewohnen":     "Deutsche Wohnen 🏛",
+    "berlinovo":          "Berlinovo 🏛",
+    "immoscout":          "IS24",
+    "wggesucht":          "WG-Gesucht",
+    "ebay_kleinanzeigen": "Kleinanzeigen",
+    "immowelt":           "Immowelt",
+}
+
+
+async def cmd_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update): return await _deny(update)
+    n = 5
+    if context.args:
+        try:
+            n = min(int(context.args[0]), 10)
+        except ValueError:
+            pass
+
+    rows = await get_recent_listings(n)
+    if not rows:
+        await update.message.reply_text("📭 لا توجد إعلانات محفوظة بعد.")
+        return
+
+    lines = [f"🕐 *آخر {n} إعلانات تم رصدها*\n━━━━━━━━━━━━━━━━━━━━\n"]
+    for i, r in enumerate(rows, 1):
+        price = f"{r['price']:.0f} €" if r.get("price") else "—"
+        rooms = str(r["rooms"]) if r.get("rooms") else "—"
+        src   = SOURCE_LABELS.get(r.get("source",""), r.get("source",""))
+        title = (r.get("title") or "شقة").strip()[:40]
+        ago   = _time_ago(r.get("created_at"))
+        url   = r.get("url","")
+        lines.append(
+            f"*{i}.* [{title}]({url})\n"
+            f"   💰 {price} · 🛏 {rooms} · {src} · {ago}\n"
+        )
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+        disable_web_page_preview=True,
+    )
 
 
 # ── /set_price / /set_rooms / /set_area ──────────────────────────────────────
@@ -118,7 +210,7 @@ async def cmd_set_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(
             f"✅ أقل عدد غرف: *{r}*", parse_mode=ParseMode.MARKDOWN)
     except ValueError:
-        await update.message.reply_text("❌ رقم غير صحيح. مثال: /set_rooms 2")
+        await update.message.reply_text("❌ رقم غير صحيح.")
 
 
 async def cmd_set_area(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -136,19 +228,18 @@ async def cmd_set_area(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
     await upsert_settings(str(update.effective_chat.id), active=1)
-    await update.message.reply_text(
-        "🟢 *الإشعارات شغّالة*", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("🟢 *الإشعارات شغّالة*", parse_mode=ParseMode.MARKDOWN)
 
 
 async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
     await upsert_settings(str(update.effective_chat.id), active=0)
-    await update.message.reply_text(
-        "🔴 *الإشعارات موقوفة*", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("🔴 *الإشعارات موقوفة*", parse_mode=ParseMode.MARKDOWN)
 
 
 # ── /check ────────────────────────────────────────────────────────────────────
 
+ALL_SOURCES = list(SOURCE_LABELS.keys())
 SOURCE_ARABIC = {
     "gewobag":            "Gewobag 🏛",
     "degewo":             "Degewo 🏛",
@@ -161,50 +252,33 @@ SOURCE_ARABIC = {
     "ebay_kleinanzeigen": "Kleinanzeigen",
     "immowelt":           "Immowelt",
 }
-ALL_SOURCES = list(SOURCE_ARABIC.keys())
-
-
-def _time_ago(iso: str | None) -> str:
-    if not iso: return "—"
-    try:
-        dt = datetime.fromisoformat(iso)
-        diff = int((datetime.utcnow() - dt).total_seconds())
-        if diff < 60:      return f"منذ {diff} ث"
-        elif diff < 3600:  return f"منذ {diff // 60} د"
-        elif diff < 86400: return f"منذ {diff // 3600} س"
-        else:              return f"منذ {diff // 86400} يوم"
-    except Exception:
-        return "—"
 
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
-    await update.message.reply_text("🔍 جاري فحص المصادر…")
-    health_rows = await get_all_health()
-    hmap = {r["source"]: r for r in health_rows}
+    await update.message.reply_text("🔍 جاري الفحص…")
+    hmap = {r["source"]: r for r in await get_all_health()}
 
-    ok_lines, err_lines, never_lines = [], [], []
+    ok, err, never = [], [], []
     for src in ALL_SOURCES:
-        label = SOURCE_ARABIC.get(src, src)
-        row   = hmap.get(src)
+        lbl = SOURCE_ARABIC.get(src, src)
+        row = hmap.get(src)
         if not row:
-            never_lines.append(f"⚪ {label}")
-            continue
-        if row.get("status") == "ok":
-            ok_lines.append(
-                f"✅ *{label}*  `{row.get('listings_found', 0)} إعلان` · {_time_ago(row.get('last_run'))}"
+            never.append(f"⚪ {lbl}")
+        elif row.get("status") == "ok":
+            ok.append(
+                f"✅ *{lbl}*  `{row.get('listings_found',0)}` · {_time_ago(row.get('last_run'))}"
             )
         else:
-            err = str(row.get("last_error", ""))[:60]
-            err_lines.append(f"❌ *{label}*\n   └ `{err}`")
+            ok.append(
+                f"❌ *{lbl}*  `{str(row.get('last_error',''))[:50]}`"
+            )
 
     lines = ["📊 *حالة المصادر*\n━━━━━━━━━━━━━━━━━━━━\n"]
-    lines += ok_lines
-    if err_lines:
-        lines += ["\n*❌ أخطاء:*"] + err_lines
-    if never_lines:
-        lines += ["\n*⚪ لم تعمل بعد:*", "  " + " · ".join(never_lines)]
-    lines.append(f"\n📈 *{len(ok_lines)}/{len(ALL_SOURCES)}* مصدر يعمل")
+    lines += ok
+    if never:
+        lines += ["\n⚪ *لم تعمل بعد:* " + " · ".join(never)]
+    lines.append(f"\n📈 *{len(ok)}/{len(ALL_SOURCES)}* مصدر يعمل")
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
@@ -214,7 +288,7 @@ async def cmd_check_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not _is_owner(update): return await _deny(update)
     if not SCRAPER_API_KEY:
         await update.message.reply_text(
-            "⚠️ *ScraperAPI غير مفعّل*\n\n"
+            "⚠️ *ScraperAPI غير مفعّل*\n"
             "Railway → Variables → `SCRAPER_API_KEY = مفتاحك`",
             parse_mode=ParseMode.MARKDOWN); return
     await update.message.reply_text("🔍 جاري الاختبار…")
@@ -232,155 +306,115 @@ async def cmd_check_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         else:
             await update.message.reply_text(f"❌ HTTP {r.status_code}")
     except Exception as e:
-        await update.message.reply_text(f"❌ خطأ: {e}")
+        await update.message.reply_text(f"❌ {e}")
 
 
-# ── Source metadata ───────────────────────────────────────────────────────────
+# ── Listing formatter ─────────────────────────────────────────────────────────
 
 GOV_SOURCES = {
-    "gewobag", "degewo", "howoge",
-    "stadtundland", "deutschewohnen", "berlinovo",
+    "gewobag","degewo","howoge",
+    "stadtundland","deutschewohnen","berlinovo",
 }
 
 SOURCE_META = {
-    "gewobag":            ("Gewobag",              "🏛 حكومية"),
-    "degewo":             ("Degewo",               "🏛 حكومية"),
-    "howoge":             ("Howoge",               "🏛 حكومية"),
-    "stadtundland":       ("Stadt und Land",        "🏛 حكومية"),
-    "deutschewohnen":     ("Deutsche Wohnen",       "🏛 حكومية"),
-    "berlinovo":          ("Berlinovo",             "🏛 حكومية"),
-    "immoscout":          ("ImmobilienScout24",     "🔍 خاصة"),
-    "wggesucht":          ("WG-Gesucht",            "🔍 خاصة"),
-    "ebay_kleinanzeigen": ("Kleinanzeigen",         "🔍 خاصة"),
-    "immowelt":           ("Immowelt",              "🔍 خاصة"),
-}
-
-SCORE_BADGES = {
-    (22, 99): "🔥 ممتاز",
-    (15, 21): "⭐⭐ جيد جداً",
-    (8,  14): "⭐ جيد",
-    (0,   7): "📋 عادي",
+    "gewobag":            ("Gewobag",          "🏛 حكومية"),
+    "degewo":             ("Degewo",           "🏛 حكومية"),
+    "howoge":             ("Howoge",           "🏛 حكومية"),
+    "stadtundland":       ("Stadt und Land",   "🏛 حكومية"),
+    "deutschewohnen":     ("Deutsche Wohnen",  "🏛 حكومية"),
+    "berlinovo":          ("Berlinovo",        "🏛 حكومية"),
+    "immoscout":          ("ImmobilienScout24","🔍 خاصة"),
+    "wggesucht":          ("WG-Gesucht",       "🔍 خاصة"),
+    "ebay_kleinanzeigen": ("Kleinanzeigen",    "🔍 خاصة"),
+    "immowelt":           ("Immowelt",         "🔍 خاصة"),
 }
 
 FEATURE_ICONS = {
-    "بلكونة":       "🌿",
-    "تراس":         "🌿",
-    "حديقة":        "🌱",
-    "مصعد":         "🛗",
-    "مطبخ مجهز":    "🍳",
-    "مخزن":         "📦",
-    "موقف سيارة":   "🚗",
-    "بدون عوائق":   "♿",
-    "بناء جديد":    "🏗",
-    "أول سكن":      "✨",
+    "بلكونة":"🌿","تراس":"🌿","حديقة":"🌱",
+    "مصعد":"🛗","مطبخ مجهز":"🍳","مخزن":"📦",
+    "موقف سيارة":"🚗","بدون عوائق":"♿",
+    "بناء جديد":"🏗","أول سكن":"✨",
+    "غسالة":"🫧","حمام إضافي":"🚿",
 }
 
+_SCORE_BADGES = [(22,"🔥 ممتاز"),(15,"⭐⭐ جيد جداً"),(8,"⭐ جيد"),(0,"📋 عادي")]
 
-def _score_badge(score: int) -> str:
-    for (lo, hi), label in SCORE_BADGES.items():
-        if lo <= score <= hi:
+
+def _badge(score: int) -> str:
+    for lo, label in _SCORE_BADGES:
+        if score >= lo:
             return label
     return "📋 عادي"
 
 
-def _fmt_field(label: str, value, unit: str = "") -> str:
-    """Return a formatted field line or empty string if value is None/empty."""
+def _escape(text: str) -> str:
+    """Escape Markdown V1 special characters in plain text."""
+    for ch in ["_", "*", "`", "["]:
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
+def _row(icon: str, label: str, value) -> str:
     if value is None or value == "" or value == []:
         return ""
-    return f"{label}{value}{unit}\n"
+    return f"{icon} {label:<12}{value}\n"
 
 
-def _safe_title(title: str, max_len: int = 55) -> str:
-    title = (title or "شقة للإيجار").strip()
-    # Escape Markdown special chars
-    for ch in ["_", "*", "[", "]", "`"]:
-        title = title.replace(ch, "\\" + ch)
-    return title[:max_len] + ("…" if len(title) > max_len else "")
-
-
-# ── Main formatter ────────────────────────────────────────────────────────────
-
-def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup]:
-    """
-    Returns (message_text, InlineKeyboardMarkup).
-    Company name shown first. Apply button separate from view button.
-    All fields validated — no errors on missing data.
-    """
-    source = listing.get("source", "")
+def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
+    source           = listing.get("source", "")
     src_name, src_type = SOURCE_META.get(source, (source.title(), "🔍 خاصة"))
-    score     = listing.get("score", 0)
-    badge     = _score_badge(score)
-    is_urgent = listing.get("is_urgent", False)
+    score            = listing.get("score", 0)
+    is_urgent        = listing.get("is_urgent", False)
 
-    # ── Price formatting ──────────────────────────────────────────────────────
-    price = listing.get("price")
-    if price and isinstance(price, (int, float)):
-        price_str = f"{price:,.0f} €".replace(",", ".")
-    else:
-        price_str = "غير محدد"
+    # ── Price ─────────────────────────────────────────────────────────────────
+    price  = listing.get("price")
+    p_str  = f"{price:,.0f} €".replace(",", ".") if isinstance(price, (int, float)) else "غير محدد"
+    ppm2   = listing.get("price_per_m2")
+    p_str += f"  *(≈ {ppm2} €/م²)*" if ppm2 else ""
 
-    ppm2 = listing.get("price_per_m2")
-    ppm2_str = f"  *(≈ {ppm2} €/م²)*" if ppm2 else ""
-
-    # ── Rooms formatting ──────────────────────────────────────────────────────
+    # ── Rooms ─────────────────────────────────────────────────────────────────
     rooms = listing.get("rooms")
-    if rooms is not None:
-        rooms_str = str(int(rooms)) if rooms == int(rooms) else str(rooms)
-    else:
-        rooms_str = "غير محدد"
+    r_str = (str(int(rooms)) if rooms == int(rooms) else str(rooms)) if rooms else "غير محدد"
 
     # ── Size ──────────────────────────────────────────────────────────────────
-    size = listing.get("size_m2")
-    size_str = f"{size:.0f} م²" if size else None
+    size  = listing.get("size_m2")
+    s_str = f"{size:.0f} م²" if size else None
 
     # ── Location ──────────────────────────────────────────────────────────────
-    location = (
-        listing.get("district")
-        or listing.get("location")
-        or "Berlin"
-    ).strip()
+    loc = (listing.get("district") or listing.get("location") or "Berlin").strip()
 
     # ── Features ──────────────────────────────────────────────────────────────
-    features = listing.get("features") or []
-    if features:
-        feat_parts = [f"{FEATURE_ICONS.get(f, '•')} {f}" for f in features]
-        feat_line  = "  ".join(feat_parts)
-    else:
-        feat_line = None
+    features  = listing.get("features") or []
+    feat_line = "  ".join(f"{FEATURE_ICONS.get(f,'•')} {f}" for f in features) if features else None
 
-    # ── Summary ───────────────────────────────────────────────────────────────
+    # ── Title ─────────────────────────────────────────────────────────────────
+    title   = _escape((listing.get("title") or "شقة للإيجار").strip()[:55])
     summary = listing.get("summary_ar", "").strip()
 
-    # ── Build message ─────────────────────────────────────────────────────────
-    urgent_header = "🔥 *متاح فوراً — تصرف الآن\\!*\n" if is_urgent else ""
+    # ── Build ─────────────────────────────────────────────────────────────────
+    urgent = "🔥 *متاح فوراً — تصرف الآن\\!*\n" if is_urgent else ""
 
-    lines = [
-        urgent_header,
-        f"🏢 *{src_name}* — {src_type}\n",
-        f"━━━━━━━━━━━━━━━━━━━━\n",
-        f"📌 *{_safe_title(listing.get('title', ''))}*\n",
-    ]
-
-    # Summary line from AI
+    msg = (
+        f"{urgent}"
+        f"🏢 *{src_name}* — {src_type}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 *{title}*\n"
+    )
     if summary:
-        lines.append(f"💬 _{summary}_\n")
+        msg += f"💬 _{_escape(summary)}_\n"
 
-    lines.append("\n")
+    msg += "\n"
+    msg += _row("📍", "الموقع:",      loc)
+    msg += _row("💰", "الإيجار:",     p_str)
+    msg += _row("🛏", "الغرف:",       r_str)
+    msg += _row("📐", "المساحة:",     s_str)
+    msg += _row("🏢", "الطابق:",      listing.get("floor"))
+    msg += _row("📅", "الإتاحة:",     listing.get("available_from"))
+    msg += _row("🏷", "المميزات:",    feat_line)
+    msg += f"📋 WBS 100:    ✅ مطلوب\n"
+    msg += f"🎯 التقييم:    {_badge(score)}\n"
 
-    # Core fields — only shown if value exists
-    lines.append(_fmt_field("📍 الموقع:      ", location))
-    lines.append(_fmt_field("💰 الإيجار:     ", price_str + ppm2_str))
-    lines.append(_fmt_field("🛏 الغرف:       ", rooms_str))
-    lines.append(_fmt_field("📐 المساحة:     ", size_str))
-    lines.append(_fmt_field("🏢 الطابق:      ", listing.get("floor")))
-    lines.append(_fmt_field("📅 الإتاحة:     ", listing.get("available_from")))
-    lines.append(_fmt_field("🏷 المميزات:    ", feat_line))
-    lines.append(f"📋 WBS 100:    ✅ مطلوب\n")
-    lines.append(f"🎯 التقييم:    {badge}\n")
-
-    text = "".join(lines).strip()
-
-    # ── Inline keyboard — view + apply buttons ────────────────────────────────
+    # ── Buttons ───────────────────────────────────────────────────────────────
     view_url  = listing.get("url", "")
     apply_url = listing.get("apply_url", "")
 
@@ -391,22 +425,23 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup]:
         buttons.append(InlineKeyboardButton("📝 تقدم الآن", url=apply_url))
 
     keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-
-    return text, keyboard
+    return msg.strip(), keyboard
 
 
 # ── App builder ───────────────────────────────────────────────────────────────
 
 def build_app() -> Application:
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start",        cmd_start))
-    app.add_handler(CommandHandler("status",       cmd_status))
-    app.add_handler(CommandHandler("stats",        cmd_stats))
-    app.add_handler(CommandHandler("set_price",    cmd_set_price))
-    app.add_handler(CommandHandler("set_rooms",    cmd_set_rooms))
-    app.add_handler(CommandHandler("set_area",     cmd_set_area))
-    app.add_handler(CommandHandler("on",           cmd_on))
-    app.add_handler(CommandHandler("off",          cmd_off))
-    app.add_handler(CommandHandler("check",        cmd_check))
-    app.add_handler(CommandHandler("check_proxy",  cmd_check_proxy))
+    app.add_handler(CommandHandler("start",       cmd_start))
+    app.add_handler(CommandHandler("help",        cmd_help))
+    app.add_handler(CommandHandler("status",      cmd_status))
+    app.add_handler(CommandHandler("stats",       cmd_stats))
+    app.add_handler(CommandHandler("last",        cmd_last))
+    app.add_handler(CommandHandler("set_price",   cmd_set_price))
+    app.add_handler(CommandHandler("set_rooms",   cmd_set_rooms))
+    app.add_handler(CommandHandler("set_area",    cmd_set_area))
+    app.add_handler(CommandHandler("on",          cmd_on))
+    app.add_handler(CommandHandler("off",         cmd_off))
+    app.add_handler(CommandHandler("check",       cmd_check))
+    app.add_handler(CommandHandler("check_proxy", cmd_check_proxy))
     return app
