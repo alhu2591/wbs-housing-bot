@@ -40,14 +40,15 @@ async def main() -> None:
     await app.initialize()
     await app.start()
 
-    # Notification callback — sends message to owner
+    # Notification callback
     async def notify(listing: dict) -> None:
-        text = format_listing(listing)
+        text, keyboard = format_listing(listing)
         try:
             await app.bot.send_message(
                 chat_id=CHAT_ID,
                 text=text,
                 parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
                 disable_web_page_preview=False,
             )
         except Exception as e:

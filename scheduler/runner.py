@@ -1,12 +1,18 @@
 """
-Scheduler — runs all scrapers concurrently every SCRAPE_INTERVAL minutes.
+Scheduler — runs all scrapers concurrently, enriches, filters, and notifies.
 """
 import asyncio
 import logging
 
 from scrapers import ALL_SCRAPERS
-from filters import is_wbs, passes_price, passes_rooms, passes_area, score_listing
-from database import is_known, save_listing, purge_old_listings, get_settings, record_success, record_error
+from filters import (
+    is_wbs, passes_price, passes_rooms, passes_area,
+    score_listing, get_score_label, enrich,
+)
+from database import (
+    is_known, save_listing, purge_old_listings,
+    get_settings, record_success, record_error, increment_stats,
+)
 from config.settings import CHAT_ID, DEFAULT_MAX_PRICE, DEFAULT_ROOMS, DEFAULT_AREA
 
 logger = logging.getLogger(__name__)
@@ -20,12 +26,12 @@ def set_notify_callback(fn):
 
 
 async def run_once() -> None:
-    logger.info("⏳ Starting scrape cycle across %d sources…", len(ALL_SCRAPERS))
+    logger.info("⏳ Scrape cycle — %d sources", len(ALL_SCRAPERS))
     tasks = [asyncio.create_task(_safe_scrape(fn)) for fn in ALL_SCRAPERS]
     all_results = await asyncio.gather(*tasks)
 
     listings = [item for batch in all_results for item in batch]
-    logger.info("📦 Total raw listings: %d", len(listings))
+    logger.info("📦 Raw listings collected: %d", len(listings))
 
     settings  = await get_settings(CHAT_ID)
     max_price = float(settings.get("max_price") or DEFAULT_MAX_PRICE)
@@ -35,40 +41,46 @@ async def run_once() -> None:
 
     if not active:
         logger.info("🔕 Notifications disabled.")
+        await increment_stats(cycle=1)
         return
 
     new_listings = []
     for listing in listings:
-        # Government sources are pre-filtered for WBS at the URL level — trust them.
-        # Private sources must contain WBS keywords in their text.
+        # WBS check — trusted gov sources bypass text filter
         if not listing.get("trusted_wbs") and not is_wbs(listing):
             continue
-
         if not passes_price(listing, max_price):
             continue
         if min_rooms and not passes_rooms(listing, min_rooms):
             continue
         if area and not passes_area(listing, area):
             continue
-
         if await is_known(listing["id"]):
             continue
 
-        await save_listing(listing)
+        # Enrich with size, floor, availability, features, price/m²
+        listing = enrich(listing)
         listing["score"] = score_listing(listing)
+        listing["score_label"] = get_score_label(listing["score"])
+
+        await save_listing(listing)
         new_listings.append(listing)
 
+    # Best first
     new_listings.sort(key=lambda x: x.get("score", 0), reverse=True)
     logger.info("🆕 New listings to notify: %d", len(new_listings))
 
+    sent = 0
     if _notify_callback and new_listings:
         for listing in new_listings:
             try:
                 await _notify_callback(listing)
-                await asyncio.sleep(0.5)
+                sent += 1
+                await asyncio.sleep(0.4)   # Telegram flood guard
             except Exception as e:
                 logger.error("Notify failed %s: %s", listing.get("url"), e)
 
+    await increment_stats(sent=sent, cycle=1)
     await purge_old_listings()
 
 
