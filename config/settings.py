@@ -8,7 +8,7 @@ CHAT_ID: str = os.getenv("CHAT_ID", "")
 PROXY_URL: str | None = os.getenv("PROXY_URL") or None
 SCRAPER_API_KEY: str = os.getenv("SCRAPER_API_KEY", "")
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-SCRAPE_INTERVAL: int = int(os.getenv("SCRAPE_INTERVAL", "2"))
+SCRAPE_INTERVAL: int = int(os.getenv("SCRAPE_INTERVAL", "5"))
 
 DEFAULT_MAX_PRICE: int = int(os.getenv("DEFAULT_MAX_PRICE", "600"))
 DEFAULT_ROOMS: str = os.getenv("DEFAULT_ROOMS", "")

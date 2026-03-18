@@ -17,7 +17,7 @@ async def scrape() -> list[dict]:
                 "/de/properties.json?property_type_id=1&categories[]=WBS&page=1&per_page=50",
                 "/de/search.json?asset_classes[]=1&wbs=1&page=1",
             ]:
-                data = await fetch_json(f"{BASE}{api_path}", client)
+                data = await fetch_json(f"{BASE}{api_path}", client, direct=True)
                 if not data:
                     continue
                 items = data if isinstance(data, list) else data.get("results") or data.get("objects") or []

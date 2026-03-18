@@ -18,7 +18,7 @@ async def scrape() -> list[dict]:
             for page in range(1, 4):
                 api = (f"{BASE}/wp-json/gewobag/v1/offers"
                        f"?type=wohnung&wbs=1&per_page=50&page={page}")
-                data = await fetch_json(api, client)
+                data = await fetch_json(api, client, direct=True)
                 if not data:
                     break
                 items = data if isinstance(data, list) else data.get("offers", data.get("results", []))

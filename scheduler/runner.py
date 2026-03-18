@@ -38,8 +38,13 @@ async def run_once() -> None:
 
     # ── 1. Scrape all sources concurrently ────────────────────────────────────
     tasks   = [asyncio.create_task(_safe_scrape(fn)) for fn in ALL_SCRAPERS]
-    batches = await asyncio.gather(*tasks, return_exceptions=False)
-    listings = [item for batch in batches for item in (batch or [])]
+    batches  = await asyncio.gather(*tasks, return_exceptions=True)
+    listings = []
+    for result in batches:
+        if isinstance(result, Exception):
+            logger.error("Scrape task exception: %s", result)
+        elif result:
+            listings.extend(result)
     logger.info("📦 Raw: %d", len(listings))
 
     # ── 2. Load settings ──────────────────────────────────────────────────────

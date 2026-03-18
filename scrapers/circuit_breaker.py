@@ -69,14 +69,20 @@ class CircuitBreaker:
         }
 
 
-# ── Global registry ────────────────────────────────────────────────────────────
+# ── Global registry — capped to known scraper names ──────────────────────────
+_KNOWN_SOURCES = {
+    "gewobag","degewo","howoge","stadtundland","deutschewohnen","berlinovo",
+    "immoscout","wggesucht","ebay_kleinanzeigen","immowelt",
+}
 _breakers: dict[str, CircuitBreaker] = {}
 
 
 def get_breaker(source: str) -> CircuitBreaker:
-    if source not in _breakers:
-        _breakers[source] = CircuitBreaker(source)
-    return _breakers[source]
+    # Only track known scrapers to prevent unbounded growth
+    key = source if source in _KNOWN_SOURCES else "__unknown__"
+    if key not in _breakers:
+        _breakers[key] = CircuitBreaker(key)
+    return _breakers[key]
 
 
 def all_statuses() -> list[dict]:
