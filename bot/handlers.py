@@ -394,20 +394,20 @@ def _row(icon: str, label: str, value) -> str:
 
 
 def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
-    source           = listing.get("source", "")
+    source             = listing.get("source", "")
     src_name, src_type = SOURCE_META.get(source, (source.title(), "🔍 خاصة"))
-    score            = listing.get("score", 0)
-    is_urgent        = listing.get("is_urgent", False)
+    is_urgent          = listing.get("is_urgent", False)
 
     # ── Price ─────────────────────────────────────────────────────────────────
-    price  = listing.get("price")
-    p_str  = f"{price:,.0f} €".replace(",", ".") if isinstance(price, (int, float)) else "غير محدد"
-    ppm2   = listing.get("price_per_m2")
-    p_str += f"  *(≈ {ppm2} €/م²)*" if ppm2 else ""
+    price = listing.get("price")
+    p_str = f"{price:,.0f} €".replace(",", ".") if isinstance(price, (int, float)) else None
+    ppm2  = listing.get("price_per_m2")
+    if p_str and ppm2:
+        p_str += f"  *(≈ {ppm2} €/م²)*"
 
     # ── Rooms ─────────────────────────────────────────────────────────────────
     rooms = listing.get("rooms")
-    r_str = (str(int(rooms)) if rooms == int(rooms) else str(rooms)) if rooms else "غير محدد"
+    r_str = (str(int(rooms)) if rooms == int(rooms) else str(rooms)) if rooms else None
 
     # ── Size ──────────────────────────────────────────────────────────────────
     size  = listing.get("size_m2")
@@ -420,57 +420,60 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     features  = listing.get("features") or []
     feat_line = "  ".join(f"{FEATURE_ICONS.get(f,'•')} {f}" for f in features) if features else None
 
-    # ── Title ─────────────────────────────────────────────────────────────────
-    title   = _escape((listing.get("title") or "شقة للإيجار").strip()[:55])
-    summary = listing.get("summary_ar", "").strip()
-
-    # ── Build ─────────────────────────────────────────────────────────────────
-    urgent = "🔥 *متاح فوراً — تصرف الآن\\!*\n" if is_urgent else ""
-
-    msg = (
-        f"{urgent}"
-        f"🏢 *{src_name}* — {src_type}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📌 *{title}*\n"
-    )
-    if summary:
-        msg += f"💬 _{_escape(summary)}_\n"
-
-    msg += "\n"
-    msg += _row("📍", "الموقع:",      loc)
-    msg += _row("💰", "الإيجار:",     p_str)
-    msg += _row("🛏", "الغرف:",       r_str)
-    msg += _row("📐", "المساحة:",     s_str)
-    msg += _row("🏢", "الطابق:",      listing.get("floor"))
-    msg += _row("📅", "الإتاحة:",     listing.get("available_from"))
-    msg += _row("🏷", "المميزات:",    feat_line)
-
-    # ── WBS badge ─────────────────────────────────────────────────────────────
+    # ── WBS line ──────────────────────────────────────────────────────────────
     wbs_level = listing.get("wbs_level")
     if wbs_level:
-        wbs_line = f"📋 {wbs_level}:   ✅ مطلوب\n"
+        wbs_line = f"📋 WBS:         ✅ مطلوب {wbs_level}"
     else:
-        wbs_line = "📋 WBS:        ❌ غير مطلوب\n"
-    msg += wbs_line
-    msg += f"🎯 التقييم:    {_badge(score)}\n"
+        wbs_line = "📋 WBS:         ❌ غير مطلوب"
 
-    # Telegram caption limit = 1024 chars — truncate gracefully
-    msg = msg.strip()
+    # ── Build message ─────────────────────────────────────────────────────────
+    lines = []
+
+    # Urgency header
+    if is_urgent:
+        lines.append("🔥 *متاح فوراً — تصرف الآن\\!*\n")
+
+    # Company header — first line after photo
+    lines.append(f"🏢 *{src_name}* — {src_type}\n")
+
+    # Core fields — only shown if value exists
+    if loc:
+        lines.append(f"📍 الموقع:      {loc}")
+    if p_str:
+        lines.append(f"💰 الإيجار:     {p_str}")
+    if r_str:
+        lines.append(f"🛏 الغرف:       {r_str}")
+    if s_str:
+        lines.append(f"📐 المساحة:     {s_str}")
+    if listing.get("floor"):
+        lines.append(f"🏢 الطابق:      {listing['floor']}")
+    if listing.get("available_from"):
+        lines.append(f"📅 الإتاحة:     {listing['available_from']}")
+    if feat_line:
+        lines.append(f"🏷 المميزات:    {feat_line}")
+
+    # WBS — always shown
+    lines.append(wbs_line)
+
+    msg = "\n".join(lines).strip()
+
+    # Telegram caption limit = 1024 chars
     if len(msg) > 1020:
         msg = msg[:1017] + "…"
 
-    # ── Buttons ───────────────────────────────────────────────────────────────
+    # ── Buttons — each on its own row ─────────────────────────────────────────
     view_url  = listing.get("url", "")
     apply_url = listing.get("apply_url", "")
 
-    buttons = []
+    rows = []
     if view_url:
-        buttons.append(InlineKeyboardButton("🔍 عرض الإعلان", url=view_url))
+        rows.append([InlineKeyboardButton("🔍 عرض الإعلان", url=view_url)])
     if apply_url and apply_url != view_url:
-        buttons.append(InlineKeyboardButton("📝 تقدم الآن", url=apply_url))
+        rows.append([InlineKeyboardButton("📝 تقدم الآن", url=apply_url)])
 
-    keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-    return msg.strip(), keyboard
+    keyboard = InlineKeyboardMarkup(rows) if rows else None
+    return msg, keyboard
 
 
 # ── App builder ───────────────────────────────────────────────────────────────
