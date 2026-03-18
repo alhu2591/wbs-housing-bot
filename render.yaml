@@ -1,0 +1,15 @@
+services:
+  - type: worker
+    name: wbs-housing-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false
+      - key: SCRAPE_INTERVAL
+        value: "2"
+      - key: DEFAULT_MAX_PRICE
+        value: "600"
