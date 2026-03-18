@@ -50,13 +50,19 @@ def _wrap_url(url: str, render_js: bool = False) -> str:
 
 
 def build_client() -> httpx.AsyncClient:
-    proxies = {"all://": PROXY_URL} if PROXY_URL else None
-    return httpx.AsyncClient(
-        headers=random_headers(),
-        timeout=60,
-        follow_redirects=True,
-        proxies=proxies,
-    )
+    """Build AsyncClient — compatible with all httpx versions."""
+    kwargs: dict = {
+        "headers":          random_headers(),
+        "timeout":          60,
+        "follow_redirects": True,
+    }
+    if PROXY_URL:
+        # httpx >= 0.28 uses 'proxy=', older uses 'proxies='
+        try:
+            return httpx.AsyncClient(**kwargs, proxy=PROXY_URL)
+        except TypeError:
+            return httpx.AsyncClient(**kwargs, proxies={"all://": PROXY_URL})
+    return httpx.AsyncClient(**kwargs)
 
 
 async def fetch(url: str, client: Optional[httpx.AsyncClient] = None, render_js: bool = False) -> Optional[str]:

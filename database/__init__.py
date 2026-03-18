@@ -1,5 +1,5 @@
 from .db import (
-    init_db, is_known, save_listing, purge_old_listings,
+    init_db, is_known, are_known, save_listing, purge_old_listings,
     get_recent_listings, increment_stats, get_stats,
     get_settings, upsert_settings,
 )

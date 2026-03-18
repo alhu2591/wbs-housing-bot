@@ -49,7 +49,7 @@ async def fetch_og_image(url: str) -> str | None:
     try:
         async with httpx.AsyncClient(
             headers=HEADERS,
-            timeout=10,
+            timeout=8,           # fast — if no image in 8s, skip it
             follow_redirects=True,
         ) as client:
             resp = await client.get(url)
