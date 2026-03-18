@@ -31,12 +31,13 @@ def parse_price(raw) -> float | None:
     if "," in s and "." in s:
         s = s.replace(".", "").replace(",", ".")
     elif "," in s:
-        # Could be decimal (640,00) or thousands (1,250) — check right side
         parts = s.split(",")
+        # '1,250' → 3 digits after comma → thousands separator → 1250
+        # '640,00' or '1,25' → decimal
         if len(parts) == 2 and len(parts[1]) == 3 and parts[1].isdigit():
-            s = s.replace(",", "")  # thousands: 1,250 → 1250
+            s = s.replace(",", "")      # 1,250 → 1250
         else:
-            s = s.replace(",", ".")  # decimal: 640,00 → 640.00
+            s = s.replace(",", ".")     # 640,00 → 640.00 | 1,25 → 1.25
     elif "." in s:
         parts = s.split(".")
         # X.XXX → thousands; X.XX or X.X → decimal

@@ -118,11 +118,13 @@ def extract_size(text: str) -> float | None:
 def extract_floor(text: str) -> str | None:
     text_l = text.lower()
     patterns = [
-        (r"(\d+)\.\s*og\b",              lambda m: f"الطابق {m.group(1)}"),
-        (r"(\d+)\.\s*(?:ober)?geschoss", lambda m: f"الطابق {m.group(1)}"),
-        (r"(\d+)\.\s*etage",             lambda m: f"الطابق {m.group(1)}"),
-        (r"\berdgeschoss\b|\beg\b",      lambda m: "الطابق الأرضي"),
-        (r"\bdachgeschoss\b|\bdg\b",     lambda m: "الطابق العلوي"),
+        (r"(\d+)\.\s*og\b",               lambda m: f"الطابق {m.group(1)}"),
+        (r"(\d+)\.\s*(?:ober)?geschoss",  lambda m: f"الطابق {m.group(1)}"),
+        (r"(\d+)\.\s*etage",              lambda m: f"الطابق {m.group(1)}"),
+        (r"(\d+)\.\s*stock\b",            lambda m: f"الطابق {m.group(1)}"),
+        (r"\bhochparterre\b",             lambda m: "الطابق الأرضي المرتفع"),
+        (r"\berdgeschoss\b|\beg\b",       lambda m: "الطابق الأرضي"),
+        (r"\bdachgeschoss\b|\bdg\b",      lambda m: "الطابق العلوي"),
     ]
     for pattern, formatter in patterns:
         m = re.search(pattern, text_l)

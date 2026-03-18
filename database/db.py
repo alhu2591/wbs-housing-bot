@@ -92,6 +92,8 @@ async def init_db() -> None:
 # ── Listings ──────────────────────────────────────────────────────────────────
 
 async def is_known(listing_id: str) -> bool:
+    if not listing_id:
+        return False
     db = await _conn()
     try:
         async with db.execute("SELECT 1 FROM listings WHERE id=?", (listing_id,)) as cur:
@@ -101,21 +103,36 @@ async def is_known(listing_id: str) -> bool:
 
 
 async def are_known(ids: list[str]) -> set[str]:
-    """Batch check — more efficient than N individual is_known calls."""
+    """
+    Batch dedup — 1 query instead of N.
+    Handles SQLite IN clause limit (max 999 variables) by chunking.
+    """
     if not ids:
         return set()
-    placeholders = ",".join("?" * len(ids))
-    db = await _conn()
-    try:
-        async with db.execute(
-            f"SELECT id FROM listings WHERE id IN ({placeholders})", ids
-        ) as cur:
-            return {row[0] for row in await cur.fetchall()}
-    finally:
-        await db.close()
+    clean = [i for i in ids if i]   # filter None/empty
+    if not clean:
+        return set()
+    result: set[str] = set()
+    chunk_size = 900                 # stay safely under SQLite's 999 limit
+    for i in range(0, len(clean), chunk_size):
+        chunk = clean[i : i + chunk_size]
+        placeholders = ",".join("?" * len(chunk))
+        db = await _conn()
+        try:
+            async with db.execute(
+                f"SELECT id FROM listings WHERE id IN ({placeholders})", chunk
+            ) as cur:
+                result.update(row[0] for row in await cur.fetchall())
+        finally:
+            await db.close()
+    return result
 
 
 async def save_listing(listing: dict) -> None:
+    lid = listing.get("id")
+    if not lid:
+        logger.warning("save_listing: skipping listing with no id (url=%s)", listing.get("url","")[:60])
+        return
     features_json = json.dumps(listing.get("features") or [], ensure_ascii=False)
     db = await _conn()
     try:
@@ -124,7 +141,7 @@ async def save_listing(listing: dict) -> None:
                (id,url,title,price,location,rooms,size_m2,floor,available_from,features,score,source)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                listing.get("id"), listing.get("url"), listing.get("title"),
+                lid, listing.get("url"), listing.get("title"),
                 listing.get("price"), listing.get("location"), listing.get("rooms"),
                 listing.get("size_m2"), listing.get("floor"),
                 listing.get("available_from"), features_json,

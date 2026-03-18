@@ -57,8 +57,8 @@ BOT_COMMANDS = [
     BotCommand("areas",       "إدارة المناطق المفضلة"),
     BotCommand("last",        "آخر 5 إعلانات"),
     BotCommand("check",       "صحة المصادر"),
-    BotCommand("set_price",   "أقصى إيجار — مثال: /set_price 550"),
-    BotCommand("set_rooms",   "أقل غرف — مثال: /set_rooms 2"),
+    BotCommand("set_price",   "أقصى إيجار — مثال: /set_price 550 أو اضغط للخيارات"),
+    BotCommand("set_rooms",   "أقل غرف — مثال: /set_rooms 2 أو اضغط للخيارات"),
     BotCommand("wbs_on",      "البحث عن شقق WBS فقط"),
     BotCommand("wbs_off",     "كل الشقق (افتراضي)"),
     BotCommand("on",          "تشغيل الإشعارات"),
@@ -310,18 +310,46 @@ async def cmd_set_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def cmd_set_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
-    if not context.args:
-        await update.message.reply_text("مثال: /set_rooms 2", reply_markup=MAIN_KEYBOARD); return
-    try:
-        r = float(context.args[0])
-        await upsert_settings(str(update.effective_chat.id), min_rooms=r)
-        await update.message.reply_text(
-            f"✅ أقل غرف: *{r}*",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=MAIN_KEYBOARD,
-        )
-    except ValueError:
-        await update.message.reply_text("❌ مثال: /set_rooms 2", reply_markup=MAIN_KEYBOARD)
+    if context.args:
+        try:
+            r = float(context.args[0].replace(",", "."))
+            await upsert_settings(str(update.effective_chat.id), min_rooms=r)
+            await update.message.reply_text(
+                f"✅ أقل غرف: *{r}*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return
+        except ValueError:
+            pass
+    # No args — show quick-select keyboard
+    room_opts = [1, 1.5, 2, 2.5, 3, 3.5, 4, 5]
+    rows = []
+    for i in range(0, len(room_opts), 4):
+        rows.append([
+            InlineKeyboardButton(f"{r} غرف", callback_data=f"set_rooms:{r}")
+            for r in room_opts[i:i+4]
+        ])
+    rows.append([InlineKeyboardButton("🔓 أي عدد غرف", callback_data="set_rooms:0")])
+    await update.message.reply_text(
+        "🛏 *اختر أقل عدد غرف أو أرسل: /set\\_rooms 2*",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+
+async def callback_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    if str(query.from_user.id) != str(CHAT_ID):
+        return
+    rooms = float(query.data.split(":")[1])
+    await upsert_settings(str(query.message.chat_id), min_rooms=rooms)
+    label = f"{rooms} غرف" if rooms > 0 else "أي عدد غرف"
+    await query.edit_message_text(
+        f"✅ *أقل غرف: {label}*",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 # ── /on / /off ────────────────────────────────────────────────────────────────
@@ -628,6 +656,7 @@ def build_app() -> Application:
     # Inline callbacks
     app.add_handler(CallbackQueryHandler(callback_area,  pattern="^area_"))
     app.add_handler(CallbackQueryHandler(callback_price, pattern="^set_price:"))
+    app.add_handler(CallbackQueryHandler(callback_rooms, pattern="^set_rooms:"))
     # Persistent reply keyboard
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     return app
