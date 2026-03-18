@@ -15,7 +15,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 
 from database import get_settings, upsert_settings, get_all_health
-from config.settings import CHAT_ID, BOT_TOKEN
+from config.settings import CHAT_ID, BOT_TOKEN, SCRAPER_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "📋 *الأوامر المتاحة:*\n"
         "/status — الحالة الحالية والإعدادات\n"
         "/check — فحص حالة جميع المصادر\n"
+        "/check\\_proxy — اختبار الاتصال بـ ScraperAPI\n"
         "/set\\_price [رقم] — تحديد أقصى إيجار (مثال: /set\\_price 550)\n"
         "/set\\_rooms [رقم] — أقل عدد غرف (مثال: /set\\_rooms 2)\n"
         "/set\\_area [منطقة] — تحديد الحي (مثال: /set\\_area Spandau)\n"
@@ -61,14 +62,57 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     active_icon = "✅ يعمل" if s.get("active") else "🔕 موقوف"
     area = s.get("area") or "كل برلين"
     rooms = s.get("min_rooms") or "أي عدد"
+    proxy_status = "✅ ScraperAPI مفعّل" if SCRAPER_API_KEY else "⚠️ بدون ScraperAPI (قد لا تعمل المواقع)"
     text = (
         f"📊 *الحالة الحالية:*\n\n"
         f"🔔 الإشعارات: {active_icon}\n"
         f"💰 أقصى إيجار: {s.get('max_price', 600)} €\n"
         f"🛏 أقل غرف: {rooms}\n"
         f"📍 المنطقة: {area}\n"
+        f"🌐 البروكسي: {proxy_status}\n"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+# ── /check_proxy ──────────────────────────────────────────────────────────────
+
+async def cmd_check_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update):
+        return await _deny(update)
+
+    if not SCRAPER_API_KEY:
+        await update.message.reply_text(
+            "⚠️ *ScraperAPI غير مفعّل!*\n\n"
+            "بدونه، IPs سيرفر Railway محجوبة من مواقع الإسكان.\n\n"
+            "📋 *خطوات التفعيل:*\n"
+            "1️⃣ سجّل مجاناً على: scraperapi.com\n"
+            "2️⃣ انسخ الـ API Key\n"
+            "3️⃣ في Railway → Variables → أضف:\n"
+            "`SCRAPER_API_KEY = مفتاحك_هنا`\n\n"
+            "✅ مجاني: 1000 طلب/شهر",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    await update.message.reply_text("🔍 جاري اختبار الاتصال بـ ScraperAPI…")
+    try:
+        import httpx
+        from urllib.parse import urlencode
+        test_url = "https://httpbin.org/ip"
+        params = urlencode({"api_key": SCRAPER_API_KEY, "url": test_url})
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(f"https://api.scraperapi.com/?{params}")
+        if r.status_code == 200:
+            await update.message.reply_text(
+                f"✅ *ScraperAPI يعمل بنجاح!*\n\n"
+                f"IP المستخدم: `{r.json().get('origin', 'unknown')}`\n"
+                f"الحالة: جاهز للكشط 🚀",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await update.message.reply_text(f"❌ ScraperAPI رجع: HTTP {r.status_code}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطأ في الاتصال: {e}")
 
 
 # ── /set_price ────────────────────────────────────────────────────────────────
@@ -272,12 +316,13 @@ def format_listing(listing: dict) -> str:
 
 def build_app() -> Application:
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start",     cmd_start))
-    app.add_handler(CommandHandler("status",    cmd_status))
-    app.add_handler(CommandHandler("set_price", cmd_set_price))
-    app.add_handler(CommandHandler("set_rooms", cmd_set_rooms))
-    app.add_handler(CommandHandler("set_area",  cmd_set_area))
-    app.add_handler(CommandHandler("on",        cmd_on))
-    app.add_handler(CommandHandler("off",       cmd_off))
-    app.add_handler(CommandHandler("check",     cmd_check))
+    app.add_handler(CommandHandler("start",        cmd_start))
+    app.add_handler(CommandHandler("status",       cmd_status))
+    app.add_handler(CommandHandler("set_price",    cmd_set_price))
+    app.add_handler(CommandHandler("set_rooms",    cmd_set_rooms))
+    app.add_handler(CommandHandler("set_area",     cmd_set_area))
+    app.add_handler(CommandHandler("on",           cmd_on))
+    app.add_handler(CommandHandler("off",          cmd_off))
+    app.add_handler(CommandHandler("check",        cmd_check))
+    app.add_handler(CommandHandler("check_proxy",  cmd_check_proxy))
     return app
