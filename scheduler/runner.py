@@ -80,11 +80,15 @@ async def run_once() -> None:
                 continue
             if areas and not passes_area(listing, areas):
                 continue
-            # Social filters — Jobcenter KdU and/or Wohngeld
-            if jobcenter_mode and not passes_jobcenter(listing, household_size):
-                continue
-            if wohngeld_mode and not passes_wohngeld(listing, household_size):
-                continue
+            # Social filters — OR logic:
+            # - Both enabled  → pass if Jobcenter OR Wohngeld qualifies
+            # - Only one      → must satisfy that one
+            # - None enabled  → no filter applied
+            if jobcenter_mode or wohngeld_mode:
+                jc_ok = passes_jobcenter(listing, household_size) if jobcenter_mode else False
+                wg_ok = passes_wohngeld(listing, household_size)  if wohngeld_mode else False
+                if not (jc_ok or wg_ok):
+                    continue
             pre.append(listing)
         except Exception as e:
             logger.warning("Filter error: %s", e)

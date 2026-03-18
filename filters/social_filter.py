@@ -118,7 +118,7 @@ def passes_wohngeld(listing: dict, household_size: int) -> bool:
 def get_social_badge(listing: dict, household_size: int) -> tuple[bool, bool, str]:
     """
     Returns (jobcenter_ok, wohngeld_ok, badge_text).
-    badge_text is shown in Telegram notification.
+    OR logic: listing qualifies if EITHER condition is met.
     """
     jc  = passes_jobcenter(listing, household_size)
     wg  = passes_wohngeld(listing, household_size)
@@ -126,7 +126,7 @@ def get_social_badge(listing: dict, household_size: int) -> tuple[bool, bool, st
     wg_limit = get_wohngeld_limit(household_size)
 
     if jc and wg:
-        badge = f"🏛 Jobcenter ✅ ({jc_limit:.0f}€) · Wohngeld ✅ ({wg_limit:.0f}€)"
+        badge = f"🏛 Jobcenter ✅ · Wohngeld ✅"
     elif jc and not wg:
         badge = f"🏛 Jobcenter ✅ ({jc_limit:.0f}€) · Wohngeld ❌"
     elif not jc and wg:
