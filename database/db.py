@@ -36,6 +36,7 @@ _DDL = [
         max_price   REAL    DEFAULT 600,
         min_rooms   REAL    DEFAULT 0,
         area        TEXT    DEFAULT '',
+        wbs_only    INTEGER DEFAULT 1,
         updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """,
@@ -53,11 +54,12 @@ _DDL = [
 
 # Columns added in later versions — migrated automatically
 _MIGRATIONS = [
-    ("listings", "size_m2",        "REAL"),
-    ("listings", "floor",          "TEXT"),
-    ("listings", "available_from", "TEXT"),
-    ("listings", "features",       "TEXT DEFAULT '[]'"),
-    ("listings", "score",          "INTEGER DEFAULT 0"),
+    ("listings",       "size_m2",        "REAL"),
+    ("listings",       "floor",          "TEXT"),
+    ("listings",       "available_from", "TEXT"),
+    ("listings",       "features",       "TEXT DEFAULT '[]'"),
+    ("listings",       "score",          "INTEGER DEFAULT 0"),
+    ("user_settings",  "wbs_only",       "INTEGER DEFAULT 1"),
 ]
 
 
@@ -186,7 +188,7 @@ async def get_settings(chat_id: str) -> dict:
             row = await cur.fetchone()
             if row:
                 return dict(row)
-    return {"chat_id": chat_id, "active": 1, "max_price": 600, "min_rooms": 0, "area": ""}
+    return {"chat_id": chat_id, "active": 1, "max_price": 600, "min_rooms": 0, "area": "", "wbs_only": 1}
 
 
 async def upsert_settings(chat_id: str, **kwargs) -> None:
@@ -196,11 +198,12 @@ async def upsert_settings(chat_id: str, **kwargs) -> None:
     current["updated_at"] = datetime.utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            """INSERT INTO user_settings (chat_id, active, max_price, min_rooms, area, updated_at)
-               VALUES (:chat_id,:active,:max_price,:min_rooms,:area,:updated_at)
+            """INSERT INTO user_settings (chat_id, active, max_price, min_rooms, area, wbs_only, updated_at)
+               VALUES (:chat_id,:active,:max_price,:min_rooms,:area,:wbs_only,:updated_at)
                ON CONFLICT(chat_id) DO UPDATE SET
                  active=excluded.active, max_price=excluded.max_price,
                  min_rooms=excluded.min_rooms, area=excluded.area,
+                 wbs_only=excluded.wbs_only,
                  updated_at=excluded.updated_at""",
             current,
         )

@@ -19,6 +19,7 @@ from database import (
     get_settings, upsert_settings,
     get_all_health, get_stats, get_recent_listings,
 )
+from filters.wbs_filter import is_wbs
 from config.settings import CHAT_ID, BOT_TOKEN, SCRAPER_API_KEY
 
 logger = logging.getLogger(__name__)
@@ -31,9 +32,11 @@ BOT_COMMANDS = [
     BotCommand("last",         "آخر 5 إعلانات تم رصدها"),
     BotCommand("check",        "صحة جميع المصادر"),
     BotCommand("check_proxy",  "اختبار ScraperAPI"),
-    BotCommand("set_price",    "تحديد أقصى إيجار — مثال: /set_price 550"),
-    BotCommand("set_rooms",    "أقل عدد غرف — مثال: /set_rooms 2"),
+    BotCommand("set_price",    "أقصى إيجار — مثال: /set_price 550"),
+    BotCommand("set_rooms",    "أقل غرف — مثال: /set_rooms 2"),
     BotCommand("set_area",     "تحديد الحي — مثال: /set_area Spandau"),
+    BotCommand("wbs_on",       "البحث عن شقق WBS فقط ✅"),
+    BotCommand("wbs_off",      "البحث عن كل الشقق بدون قيد WBS"),
     BotCommand("on",           "تشغيل الإشعارات"),
     BotCommand("off",          "إيقاف الإشعارات"),
 ]
@@ -83,6 +86,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "├ /set\\_price 550 — أقصى إيجار\n"
         "├ /set\\_rooms 2 — أقل غرف\n"
         "├ /set\\_area Spandau — تحديد الحي\n"
+        "├ /wbs\\_on — شقق WBS فقط ✅\n"
+        "├ /wbs\\_off — كل الشقق بدون قيد WBS\n"
         "├ /on و /off — تشغيل/إيقاف الإشعارات\n"
         "└ /help — هذه الرسالة\n\n"
         "✅ *البوت يعمل — يبحث كل 2 دقيقة*"
@@ -100,21 +105,24 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
-    s      = await get_settings(str(update.effective_chat.id))
-    ai     = "✅ مفعّل" if os.getenv("ANTHROPIC_API_KEY") else "⚠️ غير مفعّل"
-    proxy  = "✅ مفعّل" if SCRAPER_API_KEY else "⚠️ غير مفعّل"
-    active = "🟢 يعمل" if s.get("active") else "🔴 موقوف"
-    area   = s.get("area") or "كل برلين"
-    rooms  = s.get("min_rooms") or "أي عدد"
+    s        = await get_settings(str(update.effective_chat.id))
+    ai       = "✅ مفعّل" if os.getenv("ANTHROPIC_API_KEY") else "⚠️ غير مفعّل"
+    proxy    = "✅ مفعّل" if SCRAPER_API_KEY else "⚠️ غير مفعّل"
+    active   = "🟢 يعمل" if s.get("active") else "🔴 موقوف"
+    wbs_mode = "✅ WBS فقط" if s.get("wbs_only", 1) else "🔓 كل الشقق"
+    area     = s.get("area") or "كل برلين"
+    rooms    = s.get("min_rooms") or "أي عدد"
     await update.message.reply_text(
         "📊 *الإعدادات الحالية*\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🔔 الإشعارات:    {active}\n"
+        f"🏠 وضع البحث:    {wbs_mode}\n"
         f"💰 أقصى إيجار:  {s.get('max_price', 600)} €\n"
         f"🛏 أقل غرف:     {rooms}\n"
         f"📍 المنطقة:      {area}\n"
         f"🤖 الذكاء:       {ai}\n"
-        f"🌐 ScraperAPI:   {proxy}",
+        f"🌐 ScraperAPI:   {proxy}\n\n"
+        "_لتغيير وضع البحث: /wbs\\_on أو /wbs\\_off_",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -221,6 +229,31 @@ async def cmd_set_area(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await upsert_settings(str(update.effective_chat.id), area=area)
     await update.message.reply_text(
         f"✅ المنطقة: *{area}*", parse_mode=ParseMode.MARKDOWN)
+
+
+# ── /wbs_on / /wbs_off ───────────────────────────────────────────────────────
+
+async def cmd_wbs_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update): return await _deny(update)
+    await upsert_settings(str(update.effective_chat.id), wbs_only=1)
+    await update.message.reply_text(
+        "✅ *وضع WBS فقط مفعّل*\n\n"
+        "سأرسل فقط الشقق التي تتطلب WBS 100.\n"
+        "لعرض كل الشقق: /wbs\\_off",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def cmd_wbs_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update): return await _deny(update)
+    await upsert_settings(str(update.effective_chat.id), wbs_only=0)
+    await update.message.reply_text(
+        "🔓 *وضع كل الشقق مفعّل*\n\n"
+        "سأرسل جميع الشقق المتاحة بغض النظر عن WBS.\n\n"
+        "⚠️ _ستزيد الإشعارات بشكل كبير._\n"
+        "للعودة لـ WBS فقط: /wbs\\_on",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 # ── /on / /off ────────────────────────────────────────────────────────────────
@@ -411,7 +444,11 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     msg += _row("🏢", "الطابق:",      listing.get("floor"))
     msg += _row("📅", "الإتاحة:",     listing.get("available_from"))
     msg += _row("🏷", "المميزات:",    feat_line)
-    msg += f"📋 WBS 100:    ✅ مطلوب\n"
+
+    # WBS badge — show clearly whether listing requires WBS or not
+    has_wbs = listing.get("trusted_wbs") or listing.get("wbs_label") or is_wbs(listing)
+    wbs_line = "📋 WBS 100:    ✅ مطلوب\n" if has_wbs else "📋 WBS 100:    ❌ غير مطلوب\n"
+    msg += wbs_line
     msg += f"🎯 التقييم:    {_badge(score)}\n"
 
     # ── Buttons ───────────────────────────────────────────────────────────────
@@ -442,6 +479,8 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("set_area",    cmd_set_area))
     app.add_handler(CommandHandler("on",          cmd_on))
     app.add_handler(CommandHandler("off",         cmd_off))
+    app.add_handler(CommandHandler("wbs_on",      cmd_wbs_on))
+    app.add_handler(CommandHandler("wbs_off",     cmd_wbs_off))
     app.add_handler(CommandHandler("check",       cmd_check))
     app.add_handler(CommandHandler("check_proxy", cmd_check_proxy))
     return app

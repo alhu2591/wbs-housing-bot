@@ -44,6 +44,7 @@ async def run_once() -> None:
     min_rooms = settings.get("min_rooms") or DEFAULT_ROOMS
     area      = settings.get("area") or DEFAULT_AREA
     active    = bool(settings.get("active", 1))
+    wbs_only  = bool(settings.get("wbs_only", 1))
 
     if not active:
         logger.info("🔕 Notifications disabled.")
@@ -53,8 +54,10 @@ async def run_once() -> None:
     # ── 3. Filter ─────────────────────────────────────────────────────────────
     candidates = []
     for listing in listings:
-        if not listing.get("trusted_wbs") and not is_wbs(listing):
-            continue
+        # WBS filter — only applied when wbs_only=True
+        if wbs_only:
+            if not listing.get("trusted_wbs") and not is_wbs(listing):
+                continue
         if not passes_price(listing, max_price):
             continue
         if min_rooms and not passes_rooms(listing, min_rooms):
