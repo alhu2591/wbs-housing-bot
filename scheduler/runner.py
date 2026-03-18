@@ -1,6 +1,5 @@
 """
 Scheduler — runs all scrapers concurrently every SCRAPE_INTERVAL minutes.
-Filters results, deduplicates, saves to DB, and triggers notifications.
 """
 import asyncio
 import logging
@@ -12,7 +11,6 @@ from config.settings import CHAT_ID, DEFAULT_MAX_PRICE, DEFAULT_ROOMS, DEFAULT_A
 
 logger = logging.getLogger(__name__)
 
-# Will be injected from main.py
 _notify_callback = None
 
 
@@ -26,34 +24,33 @@ async def run_once() -> None:
     tasks = [asyncio.create_task(_safe_scrape(fn)) for fn in ALL_SCRAPERS]
     all_results = await asyncio.gather(*tasks)
 
-    # Flatten
     listings = [item for batch in all_results for item in batch]
-    logger.info("📦 Total raw listings collected: %d", len(listings))
+    logger.info("📦 Total raw listings: %d", len(listings))
 
-    # Load user settings (single-user bot)
-    settings = await get_settings(CHAT_ID)
-    max_price = settings.get("max_price") or DEFAULT_MAX_PRICE
+    settings  = await get_settings(CHAT_ID)
+    max_price = float(settings.get("max_price") or DEFAULT_MAX_PRICE)
     min_rooms = settings.get("min_rooms") or DEFAULT_ROOMS
     area      = settings.get("area") or DEFAULT_AREA
     active    = bool(settings.get("active", 1))
 
     if not active:
-        logger.info("🔕 Notifications disabled by user.")
+        logger.info("🔕 Notifications disabled.")
         return
 
     new_listings = []
     for listing in listings:
-        # WBS check
-        if not is_wbs(listing):
+        # Government sources are pre-filtered for WBS at the URL level — trust them.
+        # Private sources must contain WBS keywords in their text.
+        if not listing.get("trusted_wbs") and not is_wbs(listing):
             continue
-        # Price / rooms / area filters
+
         if not passes_price(listing, max_price):
             continue
         if min_rooms and not passes_rooms(listing, min_rooms):
             continue
         if area and not passes_area(listing, area):
             continue
-        # Deduplication
+
         if await is_known(listing["id"]):
             continue
 
@@ -61,24 +58,21 @@ async def run_once() -> None:
         listing["score"] = score_listing(listing)
         new_listings.append(listing)
 
-    # Sort by score descending so best listings notify first
     new_listings.sort(key=lambda x: x.get("score", 0), reverse=True)
-    logger.info("🆕 New matching listings to notify: %d", len(new_listings))
+    logger.info("🆕 New listings to notify: %d", len(new_listings))
 
     if _notify_callback and new_listings:
         for listing in new_listings:
             try:
                 await _notify_callback(listing)
-                await asyncio.sleep(0.5)   # avoid Telegram flood
+                await asyncio.sleep(0.5)
             except Exception as e:
-                logger.error("Notification failed for %s: %s", listing.get("url"), e)
+                logger.error("Notify failed %s: %s", listing.get("url"), e)
 
-    # Daily cleanup — purge listings older than TTL
     await purge_old_listings()
 
 
 async def _safe_scrape(fn) -> list:
-    # Derive source name from function module name
     source = fn.__module__.split(".")[-1]
     try:
         results = await fn()
