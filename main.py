@@ -13,7 +13,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.constants import ParseMode
 
 from utils import setup_logging
-from database import init_db
+from database import init_db, init_health_table
 from bot import build_app, format_listing
 from scheduler import run_once, set_notify_callback
 from config.settings import CHAT_ID, BOT_TOKEN, SCRAPE_INTERVAL
@@ -33,6 +33,7 @@ async def main() -> None:
 
     # Init DB
     await init_db()
+    await init_health_table()
 
     # Build Telegram app
     app = build_app()

@@ -3,7 +3,7 @@ Telegram bot handlers — all commands + notification formatter.
 Arabic-first UI.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from telegram import Update
 from telegram.ext import (
@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-from database import get_settings, upsert_settings
+from database import get_settings, upsert_settings, get_all_health
 from config.settings import CHAT_ID, BOT_TOKEN
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "سأراقب الإعلانات وأرسل لك فوراً أي شقة جديدة تحتاج WBS 100 في برلين.\n\n"
         "📋 *الأوامر المتاحة:*\n"
         "/status — الحالة الحالية والإعدادات\n"
+        "/check — فحص حالة جميع المصادر\n"
         "/set\\_price [رقم] — تحديد أقصى إيجار (مثال: /set\\_price 550)\n"
         "/set\\_rooms [رقم] — أقل عدد غرف (مثال: /set\\_rooms 2)\n"
         "/set\\_area [منطقة] — تحديد الحي (مثال: /set\\_area Spandau)\n"
@@ -131,6 +132,103 @@ async def cmd_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("🔕 تم إيقاف الإشعارات. اكتب /on للتشغيل مرة أخرى.")
 
 
+# ── /check ────────────────────────────────────────────────────────────────────
+
+SOURCE_ARABIC = {
+    "gewobag":        "Gewobag",
+    "degewo":         "Degewo",
+    "howoge":         "Howoge",
+    "stadtundland":   "Stadt und Land",
+    "deutschewohnen": "Deutsche Wohnen",
+    "berlinovo":      "Berlinovo",
+    "immoscout":      "ImmobilienScout24",
+    "wggesucht":      "WG-Gesucht",
+    "ebay_kleinanzeigen": "Kleinanzeigen",
+    "immowelt":       "Immowelt",
+}
+
+ALL_SOURCES = list(SOURCE_ARABIC.keys())
+
+
+def _time_ago(iso: str | None) -> str:
+    if not iso:
+        return "لم يعمل بعد"
+    try:
+        dt = datetime.fromisoformat(iso)
+        diff = int((datetime.utcnow() - dt).total_seconds())
+        if diff < 60:
+            return f"منذ {diff} ث"
+        elif diff < 3600:
+            return f"منذ {diff // 60} د"
+        else:
+            return f"منذ {diff // 3600} س"
+    except Exception:
+        return "غير معروف"
+
+
+async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update):
+        return await _deny(update)
+
+    await update.message.reply_text("🔍 جاري فحص جميع المصادر…")
+
+    health_rows = await get_all_health()
+    health_map = {row["source"]: row for row in health_rows}
+
+    ok_lines = []
+    err_lines = []
+    never_lines = []
+
+    for src in ALL_SOURCES:
+        label = SOURCE_ARABIC.get(src, src)
+        row = health_map.get(src)
+
+        if not row:
+            never_lines.append(f"⚪️ {label} — لم يتم الفحص بعد")
+            continue
+
+        status = row.get("status", "unknown")
+        count  = row.get("listings_found", 0)
+        ago    = _time_ago(row.get("last_run"))
+        runs   = row.get("total_runs", 0)
+        errors = row.get("total_errors", 0)
+
+        if status == "ok":
+            ok_lines.append(
+                f"✅ *{label}*\n"
+                f"   📦 {count} إعلان | 🕐 {ago} | ⚡ {runs} تشغيل"
+            )
+        else:
+            last_err = str(row.get("last_error", ""))[:80]
+            err_lines.append(
+                f"❌ *{label}*\n"
+                f"   ⚠️ {last_err}\n"
+                f"   🕐 {ago} | ❗ {errors} خطأ من {runs}"
+            )
+
+    lines = ["📊 *تقرير حالة المصادر*\n"]
+
+    if ok_lines:
+        lines.append("*✅ تعمل بنجاح:*")
+        lines.extend(ok_lines)
+
+    if err_lines:
+        lines.append("\n*❌ بها أخطاء:*")
+        lines.extend(err_lines)
+
+    if never_lines:
+        lines.append("\n*⚪️ لم تعمل بعد:*")
+        lines.extend(never_lines)
+
+    total_ok  = len(ok_lines)
+    total_err = len(err_lines) + len(never_lines)
+    lines.append(
+        f"\n📈 *الملخص:* {total_ok} مصدر يعمل / {total_err} يحتاج مراجعة"
+    )
+
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
 # ── Notification formatter ────────────────────────────────────────────────────
 
 SOURCE_LABELS = {
@@ -181,4 +279,5 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("set_area",  cmd_set_area))
     app.add_handler(CommandHandler("on",        cmd_on))
     app.add_handler(CommandHandler("off",       cmd_off))
+    app.add_handler(CommandHandler("check",     cmd_check))
     return app

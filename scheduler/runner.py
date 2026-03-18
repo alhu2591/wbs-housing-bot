@@ -7,7 +7,7 @@ import logging
 
 from scrapers import ALL_SCRAPERS
 from filters import is_wbs, passes_price, passes_rooms, passes_area, score_listing
-from database import is_known, save_listing, purge_old_listings, get_settings
+from database import is_known, save_listing, purge_old_listings, get_settings, record_success, record_error
 from config.settings import CHAT_ID, DEFAULT_MAX_PRICE, DEFAULT_ROOMS, DEFAULT_AREA
 
 logger = logging.getLogger(__name__)
@@ -78,8 +78,13 @@ async def run_once() -> None:
 
 
 async def _safe_scrape(fn) -> list:
+    # Derive source name from function module name
+    source = fn.__module__.split(".")[-1]
     try:
-        return await fn()
+        results = await fn()
+        await record_success(source, len(results))
+        return results
     except Exception as e:
         logger.error("Scraper %s crashed: %s", fn.__name__, e)
+        await record_error(source, str(e))
         return []
