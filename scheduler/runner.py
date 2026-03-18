@@ -9,6 +9,7 @@ import time
 
 from scrapers import ALL_SCRAPERS
 from scrapers.image_fetcher import fetch_og_image
+from scrapers.circuit_breaker import get_breaker
 from filters import is_wbs, passes_price, passes_rooms, passes_area, score_listing, get_score_label
 from filters.social_filter import passes_jobcenter, passes_wohngeld, get_social_badge
 from filters.ai_analyzer import ai_analyze
@@ -176,11 +177,19 @@ async def run_once() -> None:
 
 async def _safe_scrape(fn) -> list:
     source = fn.__module__.split(".")[-1]
+    cb     = get_breaker(source)
+
+    if not cb.allow():
+        logger.debug("⚡ Circuit OPEN — skipping %s", source)
+        return []
+
     try:
         results = await fn()
+        cb.record_success()
         await record_success(source, len(results))
         return results or []
     except Exception as e:
+        cb.record_failure()
         logger.error("Scraper %s: %s", source, e)
         try:
             await record_error(source, str(e))

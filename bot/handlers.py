@@ -460,21 +460,27 @@ SOURCE_ARABIC = {
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
     await update.message.reply_text("🔍 جاري الفحص…", reply_markup=MAIN_KEYBOARD)
-    hmap = {r["source"]: r for r in await get_all_health()}
+    from scrapers.circuit_breaker import all_statuses
+    hmap   = {r["source"]: r for r in await get_all_health()}
+    cb_map = {s["name"]: s for s in all_statuses()}
     ok, never = [], []
     for src in ALL_SOURCES:
-        lbl = SOURCE_ARABIC.get(src, src)
-        row = hmap.get(src)
+        lbl      = SOURCE_ARABIC.get(src, src)
+        row      = hmap.get(src)
+        cb       = cb_map.get(src, {})
+        cb_state = cb.get("state", "CLOSED")
+        cb_icon  = {"CLOSED": "🟢", "HALF": "🟡", "OPEN": "🔴"}.get(cb_state, "⚪")
         if not row:
-            never.append(f"⚪ {lbl}")
+            never.append(f"{cb_icon} {lbl}")
         elif row.get("status") == "ok":
-            ok.append(f"✅ *{lbl}*  `{row.get('listings_found',0)}` · {_time_ago(row.get('last_run'))}")
+            ok.append(f"✅ *{lbl}*  `{row.get('listings_found',0)}` · {_time_ago(row.get('last_run'))} {cb_icon}")
         else:
-            ok.append(f"❌ *{lbl}*  `{str(row.get('last_error',''))[:50]}`")
+            ok.append(f"❌ *{lbl}*  `{str(row.get('last_error',''))[:50]}` {cb_icon}")
     lines = ["📊 *حالة المصادر*\n━━━━━━━━━━━━━━━━━━━━\n"] + ok
     if never:
         lines += ["\n⚪ *لم تعمل بعد:* " + " · ".join(never)]
     lines.append(f"\n📈 *{len(ok)}/{len(ALL_SOURCES)}* مصدر يعمل")
+    lines.append("🟢طبيعي · 🟡اختبار · 🔴مغلق مؤقتاً")
     await update.message.reply_text(
         "\n".join(lines),
         parse_mode=ParseMode.MARKDOWN,
