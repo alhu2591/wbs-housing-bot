@@ -1,14 +1,12 @@
 """
-Scheduler — runs all scrapers concurrently, enriches, filters, and notifies.
+Scheduler — scrape, AI-analyze, filter, deduplicate, notify.
 """
 import asyncio
 import logging
 
 from scrapers import ALL_SCRAPERS
-from filters import (
-    is_wbs, passes_price, passes_rooms, passes_area,
-    score_listing, get_score_label, enrich,
-)
+from filters import is_wbs, passes_price, passes_rooms, passes_area, score_listing, get_score_label
+from filters.ai_analyzer import ai_analyze
 from database import (
     is_known, save_listing, purge_old_listings,
     get_settings, record_success, record_error, increment_stats,
@@ -16,7 +14,6 @@ from database import (
 from config.settings import CHAT_ID, DEFAULT_MAX_PRICE, DEFAULT_ROOMS, DEFAULT_AREA
 
 logger = logging.getLogger(__name__)
-
 _notify_callback = None
 
 
@@ -31,7 +28,7 @@ async def run_once() -> None:
     all_results = await asyncio.gather(*tasks)
 
     listings = [item for batch in all_results for item in batch]
-    logger.info("📦 Raw listings collected: %d", len(listings))
+    logger.info("📦 Raw listings: %d", len(listings))
 
     settings  = await get_settings(CHAT_ID)
     max_price = float(settings.get("max_price") or DEFAULT_MAX_PRICE)
@@ -40,13 +37,11 @@ async def run_once() -> None:
     active    = bool(settings.get("active", 1))
 
     if not active:
-        logger.info("🔕 Notifications disabled.")
         await increment_stats(cycle=1)
         return
 
     new_listings = []
     for listing in listings:
-        # WBS check — trusted gov sources bypass text filter
         if not listing.get("trusted_wbs") and not is_wbs(listing):
             continue
         if not passes_price(listing, max_price):
@@ -58,15 +53,15 @@ async def run_once() -> None:
         if await is_known(listing["id"]):
             continue
 
-        # Enrich with size, floor, availability, features, price/m²
-        listing = enrich(listing)
-        listing["score"] = score_listing(listing)
+        # AI analysis — enriches price, rooms, size, floor, features, summary
+        listing = await ai_analyze(listing)
+
+        listing["score"]       = score_listing(listing)
         listing["score_label"] = get_score_label(listing["score"])
 
         await save_listing(listing)
         new_listings.append(listing)
 
-    # Best first
     new_listings.sort(key=lambda x: x.get("score", 0), reverse=True)
     logger.info("🆕 New listings to notify: %d", len(new_listings))
 
@@ -76,7 +71,7 @@ async def run_once() -> None:
             try:
                 await _notify_callback(listing)
                 sent += 1
-                await asyncio.sleep(0.4)   # Telegram flood guard
+                await asyncio.sleep(0.5)
             except Exception as e:
                 logger.error("Notify failed %s: %s", listing.get("url"), e)
 
