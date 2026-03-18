@@ -13,7 +13,7 @@ from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
 from telegram.constants import ParseMode
 from telegram.error import TelegramError, RetryAfter, NetworkError, TimedOut
 
-from utils import setup_logging
+from utils import setup_logging, start_health_server, set_stats_fn
 from database import init_db, init_health_table, get_stats
 from bot import build_app, format_listing
 from bot.handlers import BOT_COMMANDS
@@ -69,7 +69,7 @@ async def _error_handler(update, context) -> None:
 async def main() -> None:
     # ── Validate env ──────────────────────────────────────────────────────────
     if not BOT_TOKEN:
-        logger.critical("BOT_TOKEN not set. Exiting.")
+        logger.critical("Required env var BOT_TOKEN is missing. Exiting.")
         sys.exit(1)
     if not CHAT_ID:
         logger.critical("CHAT_ID not set. Exiting.")
@@ -140,7 +140,9 @@ async def main() -> None:
 
     set_notify_callback(notify)
 
-    # ── APScheduler with error listener ──────────────────────────────────────
+    # ── Health server (Railway healthcheck + /metrics) ────────────────────────
+    set_stats_fn(get_stats)
+    asyncio.create_task(start_health_server(port=8080))
     scheduler = AsyncIOScheduler(timezone="Europe/Berlin")
 
     def _job_error_listener(event):

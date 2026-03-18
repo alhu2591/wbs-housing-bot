@@ -4,7 +4,11 @@ Telegram bot — Arabic UI with persistent reply keyboard + multi-area filter.
 import json
 import logging
 import os
-from datetime import datetime
+import time as _time
+from datetime import datetime, timezone
+
+_BOT_START = _time.monotonic()
+_BOT_START_DT = datetime.now(timezone.utc)
 
 from telegram import (
     Update,
@@ -70,6 +74,7 @@ BOT_COMMANDS = [
     BotCommand("on",          "تشغيل الإشعارات"),
     BotCommand("off",         "إيقاف الإشعارات"),
     BotCommand("ping",        "فحص سرعة استجابة البوت"),
+    BotCommand("uptime",      "مدة تشغيل البوت والإحصائيات"),
     BotCommand("reset",       "إعادة جميع الإعدادات للافتراضي"),
 ]
 
@@ -787,6 +792,25 @@ async def callback_social(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         pass
 
 
+async def cmd_uptime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update): return await _deny(update)
+    import time as _t
+    elapsed   = _t.monotonic() - _BOT_START
+    hours, rm = divmod(int(elapsed), 3600)
+    mins, secs = divmod(rm, 60)
+    started   = _BOT_START_DT.strftime("%Y-%m-%d %H:%M UTC")
+    st        = await get_stats()
+    await update.message.reply_text(
+        f"⏱ *Uptime: {hours}h {mins}m {secs}s*\n"
+        f"🕐 بدأ: `{started}`\n"
+        f"🔄 دورات: `{st.get('total_cycles',0)}`\n"
+        f"📨 إشعارات: `{st.get('total_sent',0)}`\n"
+        f"🗃 محفوظ: `{st.get('db_size',0)}`",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=MAIN_KEYBOARD,
+    )
+
+
 # ── /ping ─────────────────────────────────────────────────────────────────────
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -848,6 +872,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("check",        cmd_check))
     app.add_handler(CommandHandler("check_proxy",  cmd_check_proxy))
     app.add_handler(CommandHandler("ping",         cmd_ping))
+    app.add_handler(CommandHandler("uptime",       cmd_uptime))
     app.add_handler(CommandHandler("reset",        cmd_reset))
     app.add_handler(CommandHandler("social",       cmd_social))
     app.add_handler(CommandHandler("household",    cmd_household))
