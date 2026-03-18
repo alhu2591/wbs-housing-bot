@@ -5,3 +5,8 @@ builder = "NIXPACKS"
 startCommand = "python main.py"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
+
+# Persistent volume — mount at /data so SQLite DB survives redeploys
+# In Railway dashboard: Service → Storage → Add Volume → mount path: /data
+[[volumes]]
+mountPath = "/data"

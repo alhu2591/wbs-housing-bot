@@ -13,10 +13,14 @@ DEFAULT_MAX_PRICE: int = int(os.getenv("DEFAULT_MAX_PRICE", "600"))
 DEFAULT_ROOMS: str = os.getenv("DEFAULT_ROOMS", "")
 DEFAULT_AREA: str = os.getenv("DEFAULT_AREA", "")
 
-DB_PATH: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data.db")
+# Persistent storage: Railway Volume mounts at /data, fallback to local
+_DATA_DIR = os.getenv("DATA_DIR", "/data")
+if not os.path.isdir(_DATA_DIR):
+    _DATA_DIR = os.path.dirname(os.path.dirname(__file__))   # local dev fallback
+
+DB_PATH: str = os.path.join(_DATA_DIR, "data.db")
 LOG_DIR: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
 
-# How many days before an old listing is purged
 LISTING_TTL_DAYS: int = 30
 
 WBS_KEYWORDS: list[str] = [
