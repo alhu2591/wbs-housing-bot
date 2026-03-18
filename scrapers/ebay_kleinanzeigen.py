@@ -1,71 +1,48 @@
-"""
-eBay Kleinanzeigen (now Kleinanzeigen.de) — WBS Berlin.
-"""
+"""Kleinanzeigen — WBS Berlin listings."""
 import logging
 from bs4 import BeautifulSoup
-from .base_scraper import fetch, build_client
-from filters.wbs_filter import make_id
+from .base_scraper import fetch
+from ._common import build_listing, parse_price
 
 logger = logging.getLogger(__name__)
-SOURCE = "kleinanzeigen"
+SOURCE = "ebay_kleinanzeigen"
 BASE   = "https://www.kleinanzeigen.de"
 URL    = f"{BASE}/s-wohnung-mieten/berlin/wbs/k0c203l3331"
 
 
 async def scrape() -> list[dict]:
-    results = []
+    results, seen = [], set()
     try:
-        async with build_client() as client:
-            html = await fetch(URL, client)
-            if not html:
-                return results
-            soup = BeautifulSoup(html, "lxml")
-            cards = soup.select(
-                "article.aditem, "
-                "li.ad-listitem article, "
-                "[class*='aditem']"
+        html = await fetch(URL, render_js=False)
+        if not html or len(html) < 1000:
+            return results
+        soup = BeautifulSoup(html, "lxml")
+        cards = soup.select("article.aditem, li.ad-listitem article, [class*='aditem']")
+        for card in cards:
+            a = (card.select_one("a.ellipsis, a[href*='/s-anzeige/']")
+                 or card.select_one("h2 a, h3 a"))
+            if not a:
+                continue
+            href = a["href"]
+            full_url = href if href.startswith("http") else BASE + href
+            if full_url in seen or BASE not in full_url:
+                continue
+            seen.add(full_url)
+            title_tag = card.select_one("h2,h3,.text-module-begin")
+            title = title_tag.get_text(strip=True) if title_tag else ""
+            desc_tag = card.select_one("p.aditem-main--middle--description,.description")
+            desc = desc_tag.get_text(" ", strip=True) if desc_tag else ""
+            price_tag = card.select_one("p.aditem-main--middle--price-shipping--price,.price")
+            price = parse_price(price_tag.get_text() if price_tag else None)
+            loc_tag = card.select_one(".aditem-main--top--left,[class*='location']")
+            listing = build_listing(
+                url=full_url, title=title, price=price, description=desc,
+                location=loc_tag.get_text(strip=True) if loc_tag else "Berlin",
+                wbs_label="", trusted_wbs=False, source=SOURCE, base_url=BASE,
             )
-            for card in cards:
-                a_tag = card.select_one("a.ellipsis, a[href*='/s-anzeige/']")
-                if not a_tag:
-                    a_tag = card.select_one("h2 a, h3 a")
-                if not a_tag:
-                    continue
-                href = a_tag["href"]
-                full_url = href if href.startswith("http") else BASE + href
-
-                title_tag = card.select_one("h2, h3, .text-module-begin")
-                title_text = title_tag.get_text(strip=True) if title_tag else ""
-
-                desc_tag = card.select_one("p.aditem-main--middle--description, .description")
-                description = desc_tag.get_text(" ", strip=True) if desc_tag else ""
-
-                price = None
-                price_tag = card.select_one("p.aditem-main--middle--price-shipping--price, .price")
-                if price_tag:
-                    raw = price_tag.get_text(strip=True).replace("€", "").replace(".", "").replace(",", ".").strip()
-                    digits = "".join(c for c in raw if c.isdigit() or c == ".")
-                    try:
-                        price = float(digits)
-                    except ValueError:
-                        pass
-
-                location_tag = card.select_one(".aditem-main--top--left, [class*='location']")
-                location = location_tag.get_text(strip=True) if location_tag else "Berlin"
-
-                listing = {
-                    "id": make_id(full_url),
-                    "title": title_text,
-                    "price": price,
-                    "location": location,
-                    "rooms": None,
-                    "description": description,
-                    "wbs_label": "",
-                    "url": full_url,
-                    "source": SOURCE,
-                }
+            if listing:
                 results.append(listing)
     except Exception as e:
-        logger.error("[%s] scrape failed: %s", SOURCE, e)
-    logger.info("[%s] found %d listings", SOURCE, len(results))
+        logger.error("[%s] %s", SOURCE, e)
+    logger.info("[%s] %d listings", SOURCE, len(results))
     return results

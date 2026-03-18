@@ -1,11 +1,8 @@
-"""
-Stadt und Land — JS-rendered HTML scraper.
-"""
+"""Stadt und Land — JS-rendered HTML scraper."""
 import logging
-import re
 from bs4 import BeautifulSoup
 from .base_scraper import fetch
-from filters.wbs_filter import make_id
+from ._common import build_listing, parse_price, parse_rooms
 
 logger = logging.getLogger(__name__)
 SOURCE = "stadtundland"
@@ -16,17 +13,8 @@ URLS   = [
 ]
 
 
-def _p(raw) -> float | None:
-    s = str(raw or "").replace(".", "").replace(",", ".").replace("€","").replace("\xa0","").strip()
-    m = re.search(r"\d+\.?\d*", s)
-    try:
-        return float(m.group()) if m else None
-    except (ValueError, TypeError):
-        return None
-
-
 async def scrape() -> list[dict]:
-    results = []
+    results, seen = [], set()
     try:
         for url in URLS:
             html = await fetch(url, render_js=True)
@@ -38,38 +26,31 @@ async def scrape() -> list[dict]:
                 or soup.select("[class*='immobilien']")
                 or soup.select("[class*='angebot']")
                 or soup.select("[class*='listing']")
-                or soup.select("[class*='property']")
                 or soup.select("article")
             )
-            if not cards:
-                continue
             for card in cards:
                 a = card.select_one("a[href]")
                 if not a:
                     continue
                 href = a["href"]
                 full_url = href if href.startswith("http") else BASE + href
-                if "stadtundland.de" not in full_url:
+                if full_url in seen or BASE not in full_url:
                     continue
-                title = (card.select_one("h2,h3,[class*='title']") or a).get_text(strip=True)
-                price = _p(next((t.get_text() for t in card.select("[class*='price'],[class*='preis'],[class*='miete']") if t), None))
-                rooms = _p(next((t.get_text() for t in card.select("[class*='room'],[class*='zimmer']") if t), None))
-                loc   = next((t.get_text(strip=True) for t in card.select("[class*='district'],[class*='bezirk'],[class*='ort']") if t), "Berlin")
-                results.append({
-                    "id": make_id(full_url),
-                    "title": title or "Wohnung Stadt und Land",
-                    "price": price,
-                    "location": loc,
-                    "rooms": rooms,
-                    "description": "",
-                    "wbs_label": "WBS erforderlich",
-                    "trusted_wbs": True,
-                    "url": full_url,
-                    "source": SOURCE,
-                })
+                seen.add(full_url)
+                price = parse_price(next((t.get_text() for t in card.select("[class*='price'],[class*='preis'],[class*='miete']") if t), None))
+                rooms = parse_rooms(next((t.get_text() for t in card.select("[class*='room'],[class*='zimmer']") if t), None))
+                listing = build_listing(
+                    url=full_url,
+                    title=(card.select_one("h2,h3,[class*='title']") or a).get_text(strip=True),
+                    price=price, rooms=rooms,
+                    location=next((t.get_text(strip=True) for t in card.select("[class*='district'],[class*='bezirk'],[class*='ort']") if t), "Berlin"),
+                    source=SOURCE, base_url=BASE,
+                )
+                if listing:
+                    results.append(listing)
             if results:
                 break
     except Exception as e:
-        logger.error("[%s] scrape failed: %s", SOURCE, e)
-    logger.info("[%s] found %d listings", SOURCE, len(results))
+        logger.error("[%s] %s", SOURCE, e)
+    logger.info("[%s] %d listings", SOURCE, len(results))
     return results

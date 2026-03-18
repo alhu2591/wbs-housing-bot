@@ -37,6 +37,7 @@ _DDL = [
         min_rooms   REAL    DEFAULT 0,
         area        TEXT    DEFAULT '',
         wbs_only    INTEGER DEFAULT 0,
+        areas       TEXT    DEFAULT '[]',
         updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """,
