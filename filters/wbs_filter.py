@@ -1,5 +1,5 @@
 """
-WBS filters, enrichment, and scoring.
+WBS filters, enrichment, and scoring — complete module.
 """
 import hashlib
 import re
@@ -24,11 +24,11 @@ FEATURE_KEYWORDS = {
     "terrasse":     "تراس",
     "garten":       "حديقة",
     "aufzug":       "مصعد",
-    "fahrstuhl":    "مصعد",
+    "fahrstuhl":    "مصعد",        # synonym → same Arabic label
     "einbauküche":  "مطبخ مجهز",
     "keller":       "مخزن",
     "stellplatz":   "موقف سيارة",
-    "parkplatz":    "موقف سيارة",
+    "parkplatz":    "موقف سيارة",  # synonym → same Arabic label
     "barrierefrei": "بدون عوائق",
     "neubau":       "بناء جديد",
     "erstbezug":    "أول سكن",
@@ -39,6 +39,12 @@ FEATURE_KEYWORDS = {
 _TRACKING_PARAMS = {
     "utm_source","utm_medium","utm_campaign","utm_content","utm_term",
     "ref","referrer","source","fbclid","gclid","_ga","mc_cid",
+}
+
+_MONTHS_AR = {
+    "januar":"يناير","februar":"فبراير","märz":"مارس","april":"أبريل",
+    "mai":"مايو","juni":"يونيو","juli":"يوليو","august":"أغسطس",
+    "september":"سبتمبر","oktober":"أكتوبر","november":"نوفمبر","dezember":"ديسمبر",
 }
 
 
@@ -65,7 +71,7 @@ def passes_rooms(listing: dict, min_rooms: float) -> bool:
 
 
 def passes_area(listing: dict, areas: list[str]) -> bool:
-    """Returns True if listing matches ANY selected area. Empty = all Berlin."""
+    """Matches ANY selected area (OR logic). Empty = all Berlin."""
     if not areas:
         return True
     combined = " ".join(
@@ -94,10 +100,16 @@ def make_id(url: str) -> str:
 # ── Extractors ────────────────────────────────────────────────────────────────
 
 def extract_size(text: str) -> float | None:
-    m = re.search(r"(\d[\d\.,]*)\s*m[²2²]", text, re.IGNORECASE)
+    # Match formats: 62m², 62 m², 62qm, 62 qm, 62 Quadratmeter
+    m = re.search(
+        r"(\d[\d\.,]*)\s*(?:m[²2²]|qm\b|quadratmeter)",
+        text, re.IGNORECASE,
+    )
     if m:
+        raw = m.group(1).replace(".", "").replace(",", ".")
         try:
-            return float(m.group(1).replace(".", "").replace(",", "."))
+            val = float(raw)
+            return val if 10 < val < 500 else None
         except ValueError:
             pass
     return None
@@ -126,27 +138,19 @@ def extract_available(text: str) -> str | None:
     m = re.search(r"ab\s+(\d{1,2}[./]\d{1,2}[./]\d{2,4})", text_l)
     if m:
         return f"من {m.group(1)}"
-    months_map = {
-        "januar":"يناير","februar":"فبراير","märz":"مارس","april":"أبريل",
-        "mai":"مايو","juni":"يونيو","juli":"يوليو","august":"أغسطس",
-        "september":"سبتمبر","oktober":"أكتوبر","november":"نوفمبر","dezember":"ديسمبر",
-    }
-    m = re.search(
-        r"ab\s+(januar|februar|märz|april|mai|juni|juli|august|september|oktober|november|dezember)"
-        r"\s*(\d{4})?",
-        text_l,
-    )
+    months_pattern = "|".join(_MONTHS_AR.keys())
+    m = re.search(rf"ab\s+({months_pattern})\s*(\d{{4}})?", text_l)
     if m:
-        month_ar = months_map.get(m.group(1), m.group(1))
+        month_ar = _MONTHS_AR.get(m.group(1), m.group(1))
         year = m.group(2) or ""
         return f"من {month_ar} {year}".strip()
     return None
 
 
 def extract_features(text: str) -> list[str]:
-    """Return list of Arabic feature labels found in text."""
+    """Return deduplicated Arabic feature labels found in text."""
     text_l = text.lower()
-    seen = set()
+    seen   = set()
     result = []
     for kw, label in FEATURE_KEYWORDS.items():
         if kw in text_l and label not in seen:
@@ -157,11 +161,13 @@ def extract_features(text: str) -> list[str]:
 
 def extract_wbs_level(listing: dict) -> str | None:
     """
-    Extract WBS level: 'WBS 100', 'WBS 140', ..., 'WBS مطلوب', or None.
+    Extract WBS level from listing fields (NOT from Arabic summary).
+    Returns 'WBS 100', 'WBS 140', ..., 'WBS مطلوب', or None.
     """
+    # Only scan German-language fields — not AI-generated Arabic summary
     haystack = " ".join(
         str(listing.get(f) or "").lower()
-        for f in ("title", "description", "wbs_label", "summary_ar")
+        for f in ("title", "description", "wbs_label")
     )
 
     has_number  = bool(re.search(r"wbs[\s\-_]*\d{2,3}", haystack))
@@ -205,35 +211,28 @@ def enrich(listing: dict) -> dict:
 # ── Scoring ───────────────────────────────────────────────────────────────────
 
 def score_listing(listing: dict) -> int:
+    """Score 0–32. Higher = notify first."""
     score = 0
-
-    if listing.get("trusted_wbs") or listing.get("source","").lower() in GOV_SOURCES:
+    if listing.get("trusted_wbs") or listing.get("source", "").lower() in GOV_SOURCES:
         score += 8
-
     price = listing.get("price")
     if price:
         if price < 450:   score += 8
         elif price < 500: score += 6
         elif price < 550: score += 4
         elif price < 600: score += 2
-
     rooms = listing.get("rooms")
     if rooms:
         if rooms >= 3:   score += 5
         elif rooms >= 2: score += 3
         elif rooms >= 1: score += 1
-
     size = listing.get("size_m2")
     if size:
         if size >= 70:   score += 4
         elif size >= 55: score += 2
-
     if listing.get("is_urgent"):
         score += 4
-
-    features = listing.get("features") or []
-    score += min(len(features), 3)
-
+    score += min(len(listing.get("features") or []), 3)
     return score
 
 

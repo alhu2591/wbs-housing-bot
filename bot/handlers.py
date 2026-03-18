@@ -63,6 +63,8 @@ BOT_COMMANDS = [
     BotCommand("wbs_off",     "كل الشقق (افتراضي)"),
     BotCommand("on",          "تشغيل الإشعارات"),
     BotCommand("off",         "إيقاف الإشعارات"),
+    BotCommand("ping",        "فحص سرعة استجابة البوت"),
+    BotCommand("reset",       "إعادة جميع الإعدادات للافتراضي"),
 ]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -262,22 +264,48 @@ async def callback_area(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         pass  # Message unchanged — Telegram raises error if text identical
 
 
+async def callback_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle quick-price inline button press."""
+    query = update.callback_query
+    await query.answer()
+    if not str(query.from_user.id) == str(CHAT_ID):
+        return
+    price = float(query.data.split(":")[1])
+    chat_id = str(query.message.chat_id)
+    await upsert_settings(chat_id, max_price=price)
+    await query.edit_message_text(
+        f"✅ *أقصى إيجار: {price:.0f} €*",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
 # ── /set_price / /set_rooms ───────────────────────────────────────────────────
 
 async def cmd_set_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
-    if not context.args:
-        await update.message.reply_text("مثال: /set_price 550", reply_markup=MAIN_KEYBOARD); return
-    try:
-        p = float(context.args[0])
-        await upsert_settings(str(update.effective_chat.id), max_price=p)
-        await update.message.reply_text(
-            f"✅ أقصى إيجار: *{p:.0f} €*",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=MAIN_KEYBOARD,
-        )
-    except ValueError:
-        await update.message.reply_text("❌ مثال: /set_price 550", reply_markup=MAIN_KEYBOARD)
+    if context.args:
+        try:
+            p = float(context.args[0])
+            await upsert_settings(str(update.effective_chat.id), max_price=p)
+            await update.message.reply_text(
+                f"✅ أقصى إيجار: *{p:.0f} €*",
+                parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
+            return
+        except ValueError:
+            pass
+    # No args — show quick-select keyboard
+    prices = [400, 450, 500, 550, 600, 650, 700, 800]
+    rows = []
+    for i in range(0, len(prices), 4):
+        rows.append([
+            InlineKeyboardButton(f"{p} €", callback_data=f"set_price:{p}")
+            for p in prices[i:i+4]
+        ])
+    await update.message.reply_text(
+        "💰 *اختر أقصى إيجار أو أرسل: /set\\_price 550*",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
 
 
 async def cmd_set_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -539,6 +567,42 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     return msg, InlineKeyboardMarkup(rows) if rows else None
 
 
+# ── /ping ─────────────────────────────────────────────────────────────────────
+
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update): return await _deny(update)
+    import time
+    t0 = time.monotonic()
+    msg = await update.message.reply_text("🏓 ...")
+    latency = (time.monotonic() - t0) * 1000
+    from scheduler.runner import _cycle as cycle_count
+    await msg.edit_text(
+        f"🏓 *Pong\\!*\n⚡ الاستجابة: `{latency:.0f}ms`\n🔄 دورات: `{cycle_count}`",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+# ── /reset ────────────────────────────────────────────────────────────────────
+
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update): return await _deny(update)
+    await upsert_settings(
+        str(update.effective_chat.id),
+        active=1, max_price=600, min_rooms=0,
+        area="", wbs_only=0, areas="[]",
+    )
+    await update.message.reply_text(
+        "🔄 *تم إعادة جميع الإعدادات للافتراضي*\n\n"
+        "💰 أقصى إيجار: 600 €\n"
+        "🛏 أقل غرف: أي عدد\n"
+        "📍 المناطق: كل برلين\n"
+        "🏠 الوضع: كل الشقق\n"
+        "🔔 الإشعارات: شغّالة",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=MAIN_KEYBOARD,
+    )
+
+
 # ── App builder ───────────────────────────────────────────────────────────────
 
 def build_app() -> Application:
@@ -559,8 +623,11 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("off",          cmd_off))
     app.add_handler(CommandHandler("check",        cmd_check))
     app.add_handler(CommandHandler("check_proxy",  cmd_check_proxy))
-    # Inline keyboard callbacks for /areas
-    app.add_handler(CallbackQueryHandler(callback_area, pattern="^area_"))
-    # Persistent reply keyboard buttons
+    app.add_handler(CommandHandler("ping",         cmd_ping))
+    app.add_handler(CommandHandler("reset",        cmd_reset))
+    # Inline callbacks
+    app.add_handler(CallbackQueryHandler(callback_area,  pattern="^area_"))
+    app.add_handler(CallbackQueryHandler(callback_price, pattern="^set_price:"))
+    # Persistent reply keyboard
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     return app
