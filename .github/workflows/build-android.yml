@@ -8,56 +8,121 @@ on:
 jobs:
   build-apk:
     name: Build APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cache buildozer global
+      # ── Java 17 ───────────────────────────────────────────────────────────────
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # ── Python 3.11 ───────────────────────────────────────────────────────────
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── System deps ───────────────────────────────────────────────────────────
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            git zip unzip wget curl \
+            build-essential libssl-dev libffi-dev \
+            python3-dev autoconf automake libtool \
+            zlib1g-dev libncurses5 cmake ccache
+
+      # ── Android SDK: install + accept ALL licenses ─────────────────────────────
+      - name: Install Android SDK cmdline-tools + accept licenses
+        run: |
+          # Download cmdline-tools
+          mkdir -p $HOME/android-sdk/cmdline-tools
+          cd $HOME/android-sdk/cmdline-tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O tools.zip
+          unzip -q tools.zip
+          mv cmdline-tools latest
+          echo "export ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "export PATH=$PATH:$HOME/android-sdk/cmdline-tools/latest/bin:$HOME/android-sdk/platform-tools" >> $GITHUB_ENV
+
+          export ANDROID_SDK_ROOT=$HOME/android-sdk
+          export PATH=$PATH:$HOME/android-sdk/cmdline-tools/latest/bin
+
+          # Accept ALL licenses automatically
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+
+          # Install specific stable build-tools (not rc2)
+          sdkmanager --install "build-tools;33.0.2" "platform-tools" "platforms;android-33" \
+            "ndk;25.2.9519653" \
+            --sdk_root=$HOME/android-sdk
+
+          # Accept again after install
+          yes | sdkmanager --licenses --sdk_root=$HOME/android-sdk > /dev/null 2>&1 || true
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$HOME/android-sdk/ndk/25.2.9519653" >> $GITHUB_ENV
+
+      # ── Buildozer + Cython ────────────────────────────────────────────────────
+      - name: Install buildozer
+        run: pip install buildozer==1.5.0 cython==0.29.36
+
+      # ── Cache buildozer packages (~/.buildozer) ───────────────────────────────
+      - name: Cache buildozer
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
-          key: buildozer-${{ hashFiles('android/app/buildozer.spec') }}-v4
-          restore-keys: buildozer-
+          key: buildozer-${{ runner.os }}-${{ hashFiles('android/app/buildozer.spec') }}-v5
+          restore-keys: buildozer-${{ runner.os }}-
 
-      - name: Build with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          workdir: android/app
-          buildozer_version: stable
+      # ── Build ─────────────────────────────────────────────────────────────────
+      - name: Build APK
+        working-directory: android/app
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+        run: |
+          # Tell buildozer where SDK/NDK are
+          export P4A_RELEASE_KEYALIAS=wbskey
+          buildozer android debug 2>&1 | tee build.log || true
+          echo "--- Build done ---"
+          ls -la bin/ 2>/dev/null && echo "APK found" || echo "No APK"
 
-      - name: Upload APK artifact
+      # ── Upload APK ─────────────────────────────────────────────────────────────
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: WBSBerlin-APK
-          path: ${{ steps.buildozer.outputs.filename }}
+          path: android/app/bin/*.apk
+          if-no-files-found: warn
           retention-days: 60
 
-      - name: Create Release
-        if: success()
+      # ── Create Release ─────────────────────────────────────────────────────────
+      - name: Create GitHub Release
+        if: hashFiles('android/app/bin/*.apk') != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "android-v${{ github.run_number }}"
-          name: "WBS Berlin APK — v${{ github.run_number }}"
+          name: "📱 WBS Berlin APK #${{ github.run_number }}"
           body: |
             ## تحميل تطبيق WBS Berlin
 
+            **تثبيت:**
             1. حمّل APK من الأسفل
-            2. الإعدادات → الأمان → فعّل "مصادر غير معروفة"
-            3. افتح الملف وثبّته
-
-            Built from `${{ github.sha }}`
-          files: ${{ steps.buildozer.outputs.filename }}
+            2. الإعدادات ← الأمان ← فعّل "مصادر غير معروفة"
+            3. افتح الملف
+          files: android/app/bin/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # ── Upload logs on failure ─────────────────────────────────────────────────
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: android/app/.buildozer/logs/
+          path: android/app/build.log
           retention-days: 7
