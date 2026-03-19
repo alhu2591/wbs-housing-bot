@@ -1,5 +1,6 @@
 """
-Jobcenter (KdU) + Wohngeld filter for Berlin.
+Jobcenter (KdU) + Wohngeld filter — Berlin 2024/2025.
+Each filter checks ALL conditions: price, size, AND rooms.
 
 Sources:
 - KdU: SenSoIaS Berlin AV Wohnen 2024
@@ -9,7 +10,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# ── Official Berlin KdU limits (Warmmiete) ────────────────────────────────────
+# ── Jobcenter KdU Warmmiete limits (€) ───────────────────────────────────────
 JOBCENTER_KDU_WARMMIETE: dict[int, float] = {
     1: 549.0,
     2: 671.0,
@@ -18,9 +19,9 @@ JOBCENTER_KDU_WARMMIETE: dict[int, float] = {
     5: 1021.0,
     6: 1131.0,
 }
-_JC_STEP = 110.0   # € per additional person beyond 6
+_JC_PRICE_STEP = 110.0
 
-# ── Max apartment size per household ─────────────────────────────────────────
+# ── Jobcenter max apartment size (m²) ────────────────────────────────────────
 JOBCENTER_SIZE_LIMITS: dict[int, int] = {
     1: 50,
     2: 60,
@@ -29,9 +30,21 @@ JOBCENTER_SIZE_LIMITS: dict[int, int] = {
     5: 95,
     6: 105,
 }
-_SZ_STEP = 10   # m² per additional person beyond 6
+_JC_SIZE_STEP = 10
 
-# ── Wohngeld Berlin limits (Mietenstufe VI) ───────────────────────────────────
+# ── Jobcenter minimum rooms per household ────────────────────────────────────
+# Based on AV Wohnen Berlin practical requirements
+JOBCENTER_MIN_ROOMS: dict[int, float] = {
+    1: 1.0,
+    2: 1.0,   # 1 or 2 rooms acceptable
+    3: 2.0,
+    4: 3.0,
+    5: 3.0,
+    6: 4.0,
+}
+_JC_ROOMS_STEP = 1.0
+
+# ── Wohngeld Berlin rent limits (Mietenstufe VI, 2025) ───────────────────────
 WOHNGELD_RENT_LIMITS: dict[int, float] = {
     1: 580.0,
     2: 680.0,
@@ -41,107 +54,183 @@ WOHNGELD_RENT_LIMITS: dict[int, float] = {
     6: 1150.0,
     7: 1270.0,
 }
-_WG_STEP = 120.0   # € per additional person beyond 7
+_WG_PRICE_STEP = 120.0
+
+# ── Wohngeld minimum apartment size (m²) — adequate housing ──────────────────
+WOHNGELD_SIZE_LIMITS: dict[int, int] = {
+    1: 0,    # no minimum for 1 person
+    2: 40,
+    3: 55,
+    4: 65,
+    5: 75,
+    6: 85,
+    7: 95,
+}
+_WG_SIZE_STEP = 10
+
+# ── Wohngeld minimum rooms per household ─────────────────────────────────────
+WOHNGELD_MIN_ROOMS: dict[int, float] = {
+    1: 1.0,
+    2: 1.0,
+    3: 2.0,
+    4: 2.0,
+    5: 3.0,
+    6: 3.0,
+    7: 4.0,
+}
+_WG_ROOMS_STEP = 1.0
 
 
-def _clamp_positive(n: int) -> int:
-    """Ensure household size is at least 1."""
+def _clamp(n: int) -> int:
     try:
         return max(1, int(n))
     except (TypeError, ValueError):
         return 1
 
 
-def get_jobcenter_limit(household_size: int) -> float:
-    """Return max Warmmiete (€) for Jobcenter KdU approval."""
-    n = _clamp_positive(household_size)
+# ── Limit getters ─────────────────────────────────────────────────────────────
+
+def get_jobcenter_limit(n: int) -> float:
+    n = _clamp(n)
     if n in JOBCENTER_KDU_WARMMIETE:
         return JOBCENTER_KDU_WARMMIETE[n]
-    # Extrapolate: +110€ per person beyond 6
-    base  = JOBCENTER_KDU_WARMMIETE[6]
-    extra = n - 6
-    return base + extra * _JC_STEP
+    return JOBCENTER_KDU_WARMMIETE[6] + (n - 6) * _JC_PRICE_STEP
 
+def get_jobcenter_min_rooms(n: int) -> float:
+    n = _clamp(n)
+    if n in JOBCENTER_MIN_ROOMS:
+        return JOBCENTER_MIN_ROOMS[n]
+    return JOBCENTER_MIN_ROOMS[6] + (n - 6) * _JC_ROOMS_STEP
 
-def get_wohngeld_limit(household_size: int) -> float:
-    """Return max rent (€) for Wohngeld eligibility."""
-    n = _clamp_positive(household_size)
-    if n in WOHNGELD_RENT_LIMITS:
-        return WOHNGELD_RENT_LIMITS[n]
-    # Extrapolate: +120€ per person beyond 7
-    base  = WOHNGELD_RENT_LIMITS[7]
-    extra = n - 7
-    return base + extra * _WG_STEP
-
-
-def get_size_limit(household_size: int) -> int:
-    """Return max apartment size (m²) for Jobcenter approval."""
-    n = _clamp_positive(household_size)
+def get_size_limit(n: int) -> int:
+    n = _clamp(n)
     if n in JOBCENTER_SIZE_LIMITS:
         return JOBCENTER_SIZE_LIMITS[n]
-    # Extrapolate: +10m² per person beyond 6
-    base  = JOBCENTER_SIZE_LIMITS[6]
-    extra = n - 6
-    return base + extra * _SZ_STEP
+    return JOBCENTER_SIZE_LIMITS[6] + (n - 6) * _JC_SIZE_STEP
+
+def get_wohngeld_limit(n: int) -> float:
+    n = _clamp(n)
+    if n in WOHNGELD_RENT_LIMITS:
+        return WOHNGELD_RENT_LIMITS[n]
+    return WOHNGELD_RENT_LIMITS[7] + (n - 7) * _WG_PRICE_STEP
+
+def get_wohngeld_min_rooms(n: int) -> float:
+    n = _clamp(n)
+    if n in WOHNGELD_MIN_ROOMS:
+        return WOHNGELD_MIN_ROOMS[n]
+    return WOHNGELD_MIN_ROOMS[7] + (n - 7) * _WG_ROOMS_STEP
+
+
+# ── Core filter functions ─────────────────────────────────────────────────────
+
+def _check_price(listing: dict, limit: float) -> bool | None:
+    """True=ok, False=fail, None=unknown"""
+    price = listing.get("price")
+    if price is None:  return None
+    if price <= 0:     return False
+    return price <= limit
+
+def _check_size_max(listing: dict, limit: int) -> bool | None:
+    size = listing.get("size_m2")
+    if size is None or size <= 0: return None
+    return size <= limit
+
+def _check_size_min(listing: dict, minimum: int) -> bool | None:
+    if minimum <= 0: return None
+    size = listing.get("size_m2")
+    if size is None or size <= 0: return None
+    return size >= minimum
+
+def _check_rooms_min(listing: dict, min_rooms: float) -> bool | None:
+    rooms = listing.get("rooms")
+    if rooms is None or rooms <= 0: return None
+    return rooms >= min_rooms
 
 
 def passes_jobcenter(listing: dict, household_size: int) -> bool:
     """
-    Returns True if listing qualifies for Jobcenter KdU approval.
-    Checks Warmmiete ≤ limit AND size ≤ limit (only if size is known).
-    price=None → benefit of the doubt → True.
-    price=0 → not a real rent → False.
+    Returns True ONLY if ALL known conditions pass for Jobcenter KdU.
+    Unknown values (None) are treated as benefit-of-the-doubt (pass).
+
+    Conditions:
+      1. Warmmiete ≤ KdU price limit
+      2. Size ≤ max m² limit
+      3. Rooms ≥ min rooms for household size
     """
-    price     = listing.get("price")
-    size      = listing.get("size_m2")
-    price_lim = get_jobcenter_limit(household_size)
-    size_lim  = get_size_limit(household_size)
+    n           = _clamp(household_size)
+    price_lim   = get_jobcenter_limit(n)
+    size_lim    = get_size_limit(n)
+    min_rooms   = get_jobcenter_min_rooms(n)
 
-    # price=None → unknown → pass; price=0 → not valid → fail
-    if price is not None:
-        if price <= 0:
-            return False
-        if price > price_lim:
-            return False
+    price_ok = _check_price(listing, price_lim)
+    size_ok  = _check_size_max(listing, size_lim)
+    rooms_ok = _check_rooms_min(listing, min_rooms)
 
-    # Size check: only apply if size is known and positive
-    if size is not None and size > 0:
-        if size > size_lim:
-            return False
-
+    # Fail if any known condition fails
+    if price_ok is False:  return False
+    if size_ok  is False:  return False
+    if rooms_ok is False:  return False
     return True
 
 
 def passes_wohngeld(listing: dict, household_size: int) -> bool:
     """
-    Returns True if listing is within Wohngeld rent subsidy limits.
-    price=None → True. price=0 → False.
+    Returns True ONLY if ALL known conditions pass for Wohngeld.
+
+    Conditions:
+      1. Rent ≤ Wohngeld limit
+      2. Size ≥ minimum adequate size (if known)
+      3. Rooms ≥ minimum adequate rooms for household
     """
-    price = listing.get("price")
-    if price is None:
-        return True
-    if price <= 0:
-        return False
-    return price <= get_wohngeld_limit(household_size)
+    n           = _clamp(household_size)
+    price_lim   = get_wohngeld_limit(n)
+    min_size    = WOHNGELD_SIZE_LIMITS.get(min(n, max(WOHNGELD_SIZE_LIMITS)), 0)
+    min_rooms   = get_wohngeld_min_rooms(n)
+
+    price_ok    = _check_price(listing, price_lim)
+    size_ok     = _check_size_min(listing, min_size)
+    rooms_ok    = _check_rooms_min(listing, min_rooms)
+
+    if price_ok is False:  return False
+    if size_ok  is False:  return False
+    if rooms_ok is False:  return False
+    return True
 
 
 def get_social_badge(listing: dict, household_size: int) -> tuple[bool, bool, str]:
     """
     Returns (jobcenter_ok, wohngeld_ok, badge_text).
-    OR logic: listing is viable if EITHER condition is met.
+    OR logic: passes if EITHER condition is satisfied.
+    Badge shows all condition details.
     """
-    jc       = passes_jobcenter(listing, household_size)
-    wg       = passes_wohngeld(listing, household_size)
-    jc_limit = get_jobcenter_limit(household_size)
-    wg_limit = get_wohngeld_limit(household_size)
+    n  = _clamp(household_size)
+    jc = passes_jobcenter(listing, n)
+    wg = passes_wohngeld(listing, n)
+
+    jc_lim = get_jobcenter_limit(n)
+    wg_lim = get_wohngeld_limit(n)
+    sz_lim = get_size_limit(n)
+    jc_rooms = get_jobcenter_min_rooms(n)
 
     if jc and wg:
-        badge = "🏛 Jobcenter ✅ · Wohngeld ✅"
+        badge = f"🏛 Jobcenter ✅ · Wohngeld ✅"
     elif jc:
-        badge = f"🏛 Jobcenter ✅ ({jc_limit:.0f}€) · Wohngeld ❌"
+        badge = f"🏛 Jobcenter ✅ ({jc_lim:.0f}€/{sz_lim}m²) · Wohngeld ❌"
     elif wg:
-        badge = f"🏛 Jobcenter ❌ · Wohngeld ✅ ({wg_limit:.0f}€)"
+        badge = f"🏛 Jobcenter ❌ · Wohngeld ✅ ({wg_lim:.0f}€)"
     else:
-        badge = f"🏛 Jobcenter ❌ ({jc_limit:.0f}€ max) · Wohngeld ❌"
+        badge = f"🏛 Jobcenter ❌ ({jc_lim:.0f}€/{sz_lim}m²) · Wohngeld ❌"
 
     return jc, wg, badge
+
+
+def get_full_requirements(household_size: int) -> dict:
+    """Return all limits for a given household size — used in /status display."""
+    n = _clamp(household_size)
+    return {
+        "jc_price":     get_jobcenter_limit(n),
+        "jc_size_max":  get_size_limit(n),
+        "jc_rooms_min": get_jobcenter_min_rooms(n),
+        "wg_price":     get_wohngeld_limit(n),
+        "wg_rooms_min": get_wohngeld_min_rooms(n),
+    }

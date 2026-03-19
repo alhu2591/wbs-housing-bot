@@ -9,22 +9,18 @@ from config.settings import DB_PATH, LISTING_TTL_DAYS
 
 logger = logging.getLogger(__name__)
 
-# Shared DB connect helper with timeout guard
-_DB_TIMEOUT = 10   # seconds to wait for lock before raising
+_DB_TIMEOUT = 10
 
 
 async def _conn():
-    """Open a WAL-mode connection with a lock timeout."""
     db = await aiosqlite.connect(DB_PATH, timeout=_DB_TIMEOUT)
     await db.execute("PRAGMA journal_mode=WAL")
     await db.execute("PRAGMA synchronous=NORMAL")
     await db.execute("PRAGMA cache_size=-8000")
     await db.execute("PRAGMA temp_store=MEMORY")
-    await db.execute("PRAGMA busy_timeout=8000")   # ms — retry instead of SQLITE_BUSY
+    await db.execute("PRAGMA busy_timeout=8000")
     return db
 
-
-# ── Schema ────────────────────────────────────────────────────────────────────
 
 _DDL = [
     """CREATE TABLE IF NOT EXISTS listings (
@@ -50,9 +46,13 @@ _DDL = [
         area             TEXT    DEFAULT '',
         wbs_only         INTEGER DEFAULT 0,
         areas            TEXT    DEFAULT '[]',
+        sources          TEXT    DEFAULT '[]',
         household_size   INTEGER DEFAULT 1,
         jobcenter_mode   INTEGER DEFAULT 0,
         wohngeld_mode    INTEGER DEFAULT 0,
+        quiet_start      INTEGER DEFAULT -1,
+        quiet_end        INTEGER DEFAULT -1,
+        max_per_cycle    INTEGER DEFAULT 10,
         updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
     """CREATE TABLE IF NOT EXISTS bot_stats (
@@ -76,6 +76,10 @@ _MIGRATIONS = [
     ("user_settings",  "household_size", "INTEGER DEFAULT 1"),
     ("user_settings",  "jobcenter_mode", "INTEGER DEFAULT 0"),
     ("user_settings",  "wohngeld_mode",  "INTEGER DEFAULT 0"),
+    ("user_settings",  "sources",        "TEXT DEFAULT '[]'"),
+    ("user_settings",  "quiet_start",    "INTEGER DEFAULT -1"),
+    ("user_settings",  "quiet_end",      "INTEGER DEFAULT -1"),
+    ("user_settings",  "max_per_cycle",  "INTEGER DEFAULT 10"),
 ]
 
 
@@ -95,8 +99,6 @@ async def init_db() -> None:
     logger.info("✅ DB ready — %s", DB_PATH)
 
 
-# ── Listings ──────────────────────────────────────────────────────────────────
-
 async def is_known(listing_id: str) -> bool:
     if not listing_id:
         return False
@@ -109,25 +111,18 @@ async def is_known(listing_id: str) -> bool:
 
 
 async def are_known(ids: list[str]) -> set[str]:
-    """
-    Batch dedup — 1 query instead of N.
-    Handles SQLite IN clause limit (max 999 variables) by chunking.
-    """
     if not ids:
         return set()
-    clean = [i for i in ids if i]   # filter None/empty
+    clean = [i for i in ids if i]
     if not clean:
         return set()
     result: set[str] = set()
-    chunk_size = 900                 # stay safely under SQLite's 999 limit
-    for i in range(0, len(clean), chunk_size):
-        chunk = clean[i : i + chunk_size]
+    for i in range(0, len(clean), 900):
+        chunk = clean[i:i+900]
         placeholders = ",".join("?" * len(chunk))
         db = await _conn()
         try:
-            async with db.execute(
-                f"SELECT id FROM listings WHERE id IN ({placeholders})", chunk
-            ) as cur:
+            async with db.execute(f"SELECT id FROM listings WHERE id IN ({placeholders})", chunk) as cur:
                 result.update(row[0] for row in await cur.fetchall())
         finally:
             await db.close()
@@ -137,7 +132,6 @@ async def are_known(ids: list[str]) -> set[str]:
 async def save_listing(listing: dict) -> None:
     lid = listing.get("id")
     if not lid:
-        logger.warning("save_listing: skipping listing with no id (url=%s)", listing.get("url","")[:60])
         return
     features_json = json.dumps(listing.get("features") or [], ensure_ascii=False)
     db = await _conn()
@@ -146,13 +140,11 @@ async def save_listing(listing: dict) -> None:
             """INSERT OR IGNORE INTO listings
                (id,url,title,price,location,rooms,size_m2,floor,available_from,features,score,source)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                lid, listing.get("url"), listing.get("title"),
-                listing.get("price"), listing.get("location"), listing.get("rooms"),
-                listing.get("size_m2"), listing.get("floor"),
-                listing.get("available_from"), features_json,
-                listing.get("score", 0), listing.get("source"),
-            ),
+            (lid, listing.get("url"), listing.get("title"),
+             listing.get("price"), listing.get("location"), listing.get("rooms"),
+             listing.get("size_m2"), listing.get("floor"),
+             listing.get("available_from"), features_json,
+             listing.get("score", 0), listing.get("source")),
         )
         await db.commit()
     finally:
@@ -164,8 +156,7 @@ async def get_recent_listings(limit: int = 5) -> list[dict]:
     try:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            """SELECT id,title,price,location,rooms,source,url,created_at
-               FROM listings ORDER BY created_at DESC LIMIT ?""",
+            "SELECT id,title,price,location,rooms,source,url,created_at FROM listings ORDER BY created_at DESC LIMIT ?",
             (limit,),
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
@@ -177,9 +168,7 @@ async def purge_old_listings() -> int:
     cutoff = datetime.utcnow() - timedelta(days=LISTING_TTL_DAYS)
     db = await _conn()
     try:
-        cur = await db.execute(
-            "DELETE FROM listings WHERE created_at<?", (cutoff.isoformat(),)
-        )
+        cur = await db.execute("DELETE FROM listings WHERE created_at<?", (cutoff.isoformat(),))
         await db.commit()
         if cur.rowcount:
             logger.info("🗑 Purged %d listings", cur.rowcount)
@@ -188,19 +177,15 @@ async def purge_old_listings() -> int:
         await db.close()
 
 
-# ── Stats ─────────────────────────────────────────────────────────────────────
-
 async def increment_stats(sent: int = 0, cycle: int = 0) -> None:
     now = datetime.utcnow().isoformat()
     db  = await _conn()
     try:
         await db.execute(
             """UPDATE bot_stats SET
-               total_sent   = total_sent   + ?,
-               total_cycles = total_cycles + ?,
-               last_sent_at = CASE WHEN ? > 0 THEN ? ELSE last_sent_at END,
-               updated_at   = ?
-             WHERE id=1""",
+               total_sent=total_sent+?, total_cycles=total_cycles+?,
+               last_sent_at=CASE WHEN ?>0 THEN ? ELSE last_sent_at END,
+               updated_at=? WHERE id=1""",
             (sent, cycle, sent, now, now),
         )
         await db.commit()
@@ -224,12 +209,12 @@ async def get_stats() -> dict:
         await db.close()
 
 
-# ── User Settings ─────────────────────────────────────────────────────────────
-
 _DEFAULTS = {
     "chat_id": "", "active": 1, "max_price": 600,
-    "min_rooms": 0, "area": "", "wbs_only": 0, "areas": "[]",
+    "min_rooms": 0, "area": "", "wbs_only": 0,
+    "areas": "[]", "sources": "[]",
     "household_size": 1, "jobcenter_mode": 0, "wohngeld_mode": 0,
+    "quiet_start": -1, "quiet_end": -1, "max_per_cycle": 10,
 }
 
 
@@ -237,9 +222,7 @@ async def get_settings(chat_id: str) -> dict:
     db = await _conn()
     try:
         db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM user_settings WHERE chat_id=?", (chat_id,)
-        ) as cur:
+        async with db.execute("SELECT * FROM user_settings WHERE chat_id=?", (chat_id,)) as cur:
             row = await cur.fetchone()
             if row:
                 return dict(row)
@@ -253,24 +236,27 @@ async def upsert_settings(chat_id: str, **kwargs) -> None:
     current.update(kwargs)
     current["chat_id"]    = chat_id
     current["updated_at"] = datetime.utcnow().isoformat()
-    # Ensure all expected keys exist
     for k, v in _DEFAULTS.items():
         current.setdefault(k, v)
     db = await _conn()
     try:
         await db.execute(
             """INSERT INTO user_settings
-               (chat_id,active,max_price,min_rooms,area,wbs_only,areas,
-                household_size,jobcenter_mode,wohngeld_mode,updated_at)
-               VALUES (:chat_id,:active,:max_price,:min_rooms,:area,:wbs_only,:areas,
-                       :household_size,:jobcenter_mode,:wohngeld_mode,:updated_at)
+               (chat_id,active,max_price,min_rooms,area,wbs_only,areas,sources,
+                household_size,jobcenter_mode,wohngeld_mode,quiet_start,quiet_end,max_per_cycle,updated_at)
+               VALUES
+               (:chat_id,:active,:max_price,:min_rooms,:area,:wbs_only,:areas,:sources,
+                :household_size,:jobcenter_mode,:wohngeld_mode,:quiet_start,:quiet_end,:max_per_cycle,:updated_at)
                ON CONFLICT(chat_id) DO UPDATE SET
                  active=excluded.active, max_price=excluded.max_price,
                  min_rooms=excluded.min_rooms, area=excluded.area,
                  wbs_only=excluded.wbs_only, areas=excluded.areas,
+                 sources=excluded.sources,
                  household_size=excluded.household_size,
                  jobcenter_mode=excluded.jobcenter_mode,
                  wohngeld_mode=excluded.wohngeld_mode,
+                 quiet_start=excluded.quiet_start, quiet_end=excluded.quiet_end,
+                 max_per_cycle=excluded.max_per_cycle,
                  updated_at=excluded.updated_at""",
             current,
         )

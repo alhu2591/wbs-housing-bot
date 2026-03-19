@@ -1,19 +1,19 @@
 """
 Scheduler — scrape → enrich → filter → dedup → notify.
-Pure local execution: no external API dependencies.
-Each enrichment step is individually isolated — one failure never kills the cycle.
+Respects: sources, areas, price, rooms, WBS, social, quiet hours, max-per-cycle.
 """
 import asyncio
 import json
 import logging
 import time
+from datetime import datetime
 
 from scrapers import ALL_SCRAPERS
 from scrapers.image_fetcher import fetch_og_image
 from scrapers.circuit_breaker import get_breaker
-from filters import is_wbs, passes_price, passes_rooms, passes_area, score_listing, get_score_label
+from filters import is_wbs, passes_price, passes_rooms, score_listing, get_score_label
+from filters.wbs_filter import enrich, extract_wbs_level, passes_area
 from filters.social_filter import passes_jobcenter, passes_wohngeld, get_social_badge
-from filters.wbs_filter import enrich, extract_wbs_level
 from database import (
     are_known, save_listing, purge_old_listings,
     get_settings, record_success, record_error, increment_stats,
@@ -22,7 +22,7 @@ from config.settings import CHAT_ID, DEFAULT_MAX_PRICE
 
 logger     = logging.getLogger(__name__)
 _notify_cb = None
-_cycle     = 0   # exposed for /ping and /uptime
+_cycle     = 0
 
 
 def set_notify_callback(fn):
@@ -30,37 +30,44 @@ def set_notify_callback(fn):
     _notify_cb = fn
 
 
+def _in_quiet_hours(quiet_start: int, quiet_end: int) -> bool:
+    if quiet_start < 0 or quiet_end < 0:
+        return False
+    h = datetime.now().hour
+    if quiet_start <= quiet_end:
+        return quiet_start <= h < quiet_end
+    else:  # wraps midnight: e.g. 23→7
+        return h >= quiet_start or h < quiet_end
+
+
 async def run_once() -> None:
     global _cycle
     _cycle += 1
     t0 = time.monotonic()
-    logger.info("⏳ Cycle #%d — %d sources", _cycle, len(ALL_SCRAPERS))
+    logger.info("⏳ Cycle #%d", _cycle)
 
-    # ── 1. Scrape concurrently ────────────────────────────────────────────────
-    tasks   = [asyncio.create_task(_safe_scrape(fn)) for fn in ALL_SCRAPERS]
-    batches = await asyncio.gather(*tasks, return_exceptions=True)
-    listings: list[dict] = []
-    for result in batches:
-        if isinstance(result, Exception):
-            logger.error("Scrape task exception: %s", result)
-        elif result:
-            listings.extend(result)
-    logger.info("📦 Raw: %d", len(listings))
-
-    # ── 2. Load settings ──────────────────────────────────────────────────────
+    # ── Load settings ─────────────────────────────────────────────────────────
     try:
         settings = await get_settings(CHAT_ID)
     except Exception as e:
-        logger.error("get_settings failed: %s — using defaults", e)
+        logger.error("get_settings: %s", e)
         settings = {}
 
+    active         = bool(settings.get("active", 1))
     max_price      = float(settings.get("max_price") or DEFAULT_MAX_PRICE)
     min_rooms      = float(settings.get("min_rooms") or 0)
-    active         = bool(settings.get("active", 1))
     wbs_only       = bool(settings.get("wbs_only", 0))
     household_size = int(settings.get("household_size") or 1)
     jobcenter_mode = bool(settings.get("jobcenter_mode", 0))
     wohngeld_mode  = bool(settings.get("wohngeld_mode", 0))
+    quiet_start    = int(settings.get("quiet_start", -1))
+    quiet_end      = int(settings.get("quiet_end", -1))
+    max_per_cycle  = int(settings.get("max_per_cycle") or 10)
+
+    try:
+        enabled_sources = json.loads(settings.get("sources") or "[]")
+    except Exception:
+        enabled_sources = []
     try:
         areas = json.loads(settings.get("areas") or "[]")
     except Exception:
@@ -71,7 +78,31 @@ async def run_once() -> None:
         except Exception: pass
         return
 
-    # ── 3. Filter ─────────────────────────────────────────────────────────────
+    # ── Quiet hours ───────────────────────────────────────────────────────────
+    if _in_quiet_hours(quiet_start, quiet_end):
+        logger.info("🌙 Quiet hours — skipping notifications")
+        try: await increment_stats(cycle=1)
+        except Exception: pass
+        return
+
+    # ── Scrape (only enabled sources) ─────────────────────────────────────────
+    scrapers_to_run = [
+        fn for fn in ALL_SCRAPERS
+        if not enabled_sources or fn.__module__.split(".")[-1] in enabled_sources
+    ]
+    logger.info("🌐 Scraping %d/%d sources", len(scrapers_to_run), len(ALL_SCRAPERS))
+
+    tasks   = [asyncio.create_task(_safe_scrape(fn)) for fn in scrapers_to_run]
+    batches = await asyncio.gather(*tasks, return_exceptions=True)
+    listings: list[dict] = []
+    for result in batches:
+        if isinstance(result, Exception):
+            logger.error("Scrape task exception: %s", result)
+        elif result:
+            listings.extend(result)
+    logger.info("📦 Raw: %d", len(listings))
+
+    # ── Filter ────────────────────────────────────────────────────────────────
     pre: list[dict] = []
     for listing in listings:
         try:
@@ -83,7 +114,6 @@ async def run_once() -> None:
                 continue
             if areas and not passes_area(listing, areas):
                 continue
-            # Social filters — OR logic: pass if either condition satisfied
             if jobcenter_mode or wohngeld_mode:
                 jc_ok = passes_jobcenter(listing, household_size) if jobcenter_mode else False
                 wg_ok = passes_wohngeld(listing, household_size)  if wohngeld_mode else False
@@ -93,25 +123,20 @@ async def run_once() -> None:
         except Exception as e:
             logger.warning("Filter error: %s", e)
 
-    # Batch dedup (1 query instead of N)
     known_ids  = await are_known([l["id"] for l in pre])
     candidates = [l for l in pre if l["id"] not in known_ids]
     logger.info("🔍 Candidates: %d", len(candidates))
 
-    # ── 4. Enrich (regex only, no external calls except image fetch) ──────────
+    # ── Enrich ────────────────────────────────────────────────────────────────
     enriched: list[dict] = []
     for listing in candidates:
-
-        try:
-            listing = enrich(listing)
-        except Exception as e:
-            logger.warning("enrich %s: %s", listing.get("url","")[:50], e)
+        try:    listing = enrich(listing)
+        except Exception as e: logger.warning("enrich: %s", e)
 
         try:
             if not listing.get("wbs_level"):
                 listing["wbs_level"] = extract_wbs_level(listing)
-        except Exception as e:
-            logger.warning("extract_wbs_level: %s", e)
+        except Exception: pass
 
         try:
             if not listing.get("image_url"):
@@ -127,44 +152,40 @@ async def run_once() -> None:
             listing["score_label"] = "📋 عادي"
 
         try:
-            jc_ok, wg_ok, badge = get_social_badge(listing, household_size)
-            listing["jobcenter_ok"]  = jc_ok
-            listing["wohngeld_ok"]   = wg_ok
-            listing["social_badge"]  = badge
+            jc, wg, badge = get_social_badge(listing, household_size)
+            listing["jobcenter_ok"]   = jc
+            listing["wohngeld_ok"]    = wg
+            listing["social_badge"]   = badge
             listing["household_size"] = household_size
         except Exception:
             listing["social_badge"] = ""
 
-        try:
-            await save_listing(listing)
-        except Exception as e:
-            logger.error("save_listing %s: %s", listing.get("id"), e)
+        try:    await save_listing(listing)
+        except Exception as e: logger.error("save_listing: %s", e)
 
         enriched.append(listing)
 
     enriched.sort(key=lambda x: x.get("score", 0), reverse=True)
 
-    # ── 5. Notify ─────────────────────────────────────────────────────────────
-    sent = 0
-    if _notify_cb and enriched:
-        for listing in enriched:
+    # ── Notify (respect max_per_cycle) ────────────────────────────────────────
+    sent   = 0
+    to_send = enriched[:max_per_cycle]
+    if _notify_cb and to_send:
+        for listing in to_send:
             try:
                 await _notify_cb(listing)
                 sent += 1
                 await asyncio.sleep(0.5)
             except Exception as e:
-                logger.error("notify error: %s", e)
+                logger.error("notify: %s", e)
+        if len(enriched) > max_per_cycle:
+            logger.info("📬 Capped at %d/%d (max_per_cycle)", max_per_cycle, len(enriched))
 
-    # ── 6. Housekeeping ───────────────────────────────────────────────────────
-    try:
-        await increment_stats(sent=sent, cycle=1)
-    except Exception as e:
-        logger.error("increment_stats: %s", e)
+    try:    await increment_stats(sent=sent, cycle=1)
+    except Exception as e: logger.error("increment_stats: %s", e)
 
-    try:
-        await purge_old_listings()
-    except Exception as e:
-        logger.error("purge: %s", e)
+    try:    await purge_old_listings()
+    except Exception as e: logger.error("purge: %s", e)
 
     logger.info("✅ Cycle #%d %.1fs — sent=%d new=%d raw=%d",
                 _cycle, time.monotonic()-t0, sent, len(enriched), len(listings))
@@ -174,7 +195,7 @@ async def _safe_scrape(fn) -> list:
     source = fn.__module__.split(".")[-1]
     cb     = get_breaker(source)
     if not cb.allow():
-        logger.debug("⚡ CB OPEN — skipping %s", source)
+        logger.debug("⚡ CB OPEN — skip %s", source)
         return []
     try:
         results = await fn()
