@@ -7,171 +7,71 @@ on:
 
 jobs:
   build-apk:
-    name: Build APK
-    runs-on: ubuntu-22.04
+    name: Build APK (Docker)
+    runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            git zip unzip wget build-essential \
-            libssl-dev libffi-dev python3-dev \
-            autoconf automake libtool zlib1g-dev \
-            libncurses5 cmake ccache
-
-      - name: Install buildozer + cython
-        run: pip install buildozer==1.5.0 cython==0.29.36
-
-      - name: Cache buildozer global
+      - name: Cache buildozer
         uses: actions/cache@v4
         with:
-          path: ~/.buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('android/app/buildozer.spec') }}-v6
-          restore-keys: buildozer-${{ runner.os }}-
+          path: android/app/.buildozer
+          key: buildozer-${{ hashFiles('android/app/buildozer.spec') }}-v8
+          restore-keys: buildozer-
 
-      # ── Pre-accept ALL Android SDK licenses ──────────────────────────────────
-      # These are the SHA-1 hashes of the accepted license texts.
-      # Creating these files tells sdkmanager licenses are already accepted.
-      - name: Pre-accept Android SDK licenses
+      # Official Kivy Docker image — SDK + NDK + licenses pre-installed
+      - name: Build APK via Kivy Docker
         run: |
-          mkdir -p $HOME/.android
-          touch    $HOME/.android/repositories.cfg
+          docker run --rm \
+            -v "${{ github.workspace }}/android/app":/home/user/hostcwd \
+            ghcr.io/kivy/buildozer:latest \
+            android debug
 
-          # Pre-write license hashes to ~/.android (checked by some sdkmanager versions)
-          mkdir -p $HOME/.android/licenses 2>/dev/null || true
-
-          # Also pre-write to the buildozer SDK path (created after first run)
-          # We'll patch them again in the build step via a wrapper script
-
-          # Write a sdkmanager wrapper that auto-accepts licenses
-          mkdir -p $HOME/bin
-          cat > $HOME/bin/sdkmanager-wrapper.sh << 'WRAPPER'
-          #!/bin/bash
-          # Accept all license prompts automatically
-          yes | $(which sdkmanager) "$@" 2>&1 || \
-          yes | sdkmanager "$@" 2>&1 || true
-          WRAPPER
-          chmod +x $HOME/bin/sdkmanager-wrapper.sh
-
-      # ── Build Step 1: Init buildozer (creates ~/.buildozer/android/platform) ──
-      - name: Init buildozer (downloads SDK/NDK)
-        working-directory: android/app
-        timeout-minutes: 60
+      - name: Find APK
+        id: find_apk
         run: |
-          # Run buildozer but stop after SDK download, before build-tools install
-          # We use timeout so it stops naturally and we can accept licenses
-          timeout 600 buildozer android debug 2>&1 | head -500 || true
-          
-          # NOW accept all licenses in buildozer's SDK directory
-          SDK_PATH="$HOME/.buildozer/android/platform/android-sdk"
-          if [ -d "$SDK_PATH" ]; then
-            echo "=== Found buildozer SDK at $SDK_PATH ==="
-            mkdir -p "$SDK_PATH/licenses"
-            
-            # android-sdk-license hash
-            echo -e "\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > "$SDK_PATH/licenses/android-sdk-license"
-            echo -e "\nd56f5187479451eabf01fb78af6dfcb131a6481e" >> "$SDK_PATH/licenses/android-sdk-license"
-            echo -e "\n8933bad161af4178b1185d1a37fbf41ea5269c55" >> "$SDK_PATH/licenses/android-sdk-license"
-            
-            # android-sdk-preview-license hash  
-            echo -e "\n84831b9409646a918e30573bab4c9c91346d8abd" > "$SDK_PATH/licenses/android-sdk-preview-license"
-            
-            # android-googletv-license
-            echo -e "\n601085b94cd77f0b54ff86406957099ebe79c4d7" > "$SDK_PATH/licenses/android-googletv-license"
-            
-            # google-gdk-license
-            echo -e "\n33b6a2b64607f11b759f320ef9dff4ae5c47d97a" > "$SDK_PATH/licenses/google-gdk-license"
-            
-            # mips-android-sysimage-license
-            echo -e "\ne9acab5b5fbb560a72cfaecce8946896ff6aab9d" > "$SDK_PATH/licenses/mips-android-sysimage-license"
-            
-            echo "=== License files written ==="
-            ls -la "$SDK_PATH/licenses/"
-            
-            # Now install build-tools explicitly using sdkmanager
-            if [ -f "$SDK_PATH/cmdline-tools/latest/bin/sdkmanager" ]; then
-              SDKMGR="$SDK_PATH/cmdline-tools/latest/bin/sdkmanager"
-            elif [ -f "$SDK_PATH/tools/bin/sdkmanager" ]; then
-              SDKMGR="$SDK_PATH/tools/bin/sdkmanager"
-            fi
-            
-            if [ ! -z "$SDKMGR" ]; then
-              echo "=== Installing build-tools 33.0.2 ==="
-              yes | "$SDKMGR" --sdk_root="$SDK_PATH" "build-tools;33.0.2" 2>&1 || true
-              echo "=== Installing platform-tools ==="
-              yes | "$SDKMGR" --sdk_root="$SDK_PATH" "platform-tools" 2>&1 || true
-              echo "=== Accepting licenses again ==="
-              yes | "$SDKMGR" --sdk_root="$SDK_PATH" --licenses 2>&1 || true
-            fi
-            
-            echo "=== build-tools content ==="
-            ls -la "$SDK_PATH/build-tools/" 2>/dev/null || echo "No build-tools yet"
+          APK=$(find android/app/bin -name "*.apk" 2>/dev/null | head -1)
+          if [ -n "$APK" ]; then
+            echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+            echo "apk_name=$(basename $APK)" >> "$GITHUB_OUTPUT"
+            echo "Found: $APK"
+          else
+            echo "No APK found"
+            ls -la android/app/bin/ 2>/dev/null || true
           fi
-
-      # ── Build Step 2: Full build (licenses now accepted) ──────────────────────
-      - name: Build APK (full)
-        working-directory: android/app
-        run: |
-          # Accept licenses one more time to be sure
-          SDK_PATH="$HOME/.buildozer/android/platform/android-sdk"
-          if [ -d "$SDK_PATH" ]; then
-            mkdir -p "$SDK_PATH/licenses"
-            echo -e "\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > "$SDK_PATH/licenses/android-sdk-license"
-            echo -e "\nd56f5187479451eabf01fb78af6dfcb131a6481e" >> "$SDK_PATH/licenses/android-sdk-license"
-            echo -e "\n8933bad161af4178b1185d1a37fbf41ea5269c55" >> "$SDK_PATH/licenses/android-sdk-license"
-            echo -e "\n84831b9409646a918e30573bab4c9c91346d8abd" > "$SDK_PATH/licenses/android-sdk-preview-license"
-          fi
-          
-          buildozer android debug 2>&1 | tee build.log
-          echo "=== Build finished ==="
-          ls -la bin/ 2>/dev/null || echo "No APK produced"
 
       - name: Upload APK artifact
+        if: steps.find_apk.outputs.apk_path != ''
         uses: actions/upload-artifact@v4
         with:
           name: WBSBerlin-APK
-          path: android/app/bin/*.apk
-          if-no-files-found: warn
+          path: ${{ steps.find_apk.outputs.apk_path }}
           retention-days: 60
 
       - name: Create GitHub Release
-        if: hashFiles('android/app/bin/*.apk') != ''
+        if: steps.find_apk.outputs.apk_path != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "android-v${{ github.run_number }}"
           name: "📱 WBS Berlin APK #${{ github.run_number }}"
           body: |
-            ## تحميل تطبيق WBS Berlin
+            ## 📥 تحميل تطبيق WBS Berlin
 
-            1. حمّل APK أدناه
-            2. الإعدادات ← الأمان ← فعّل "مصادر غير معروفة"
-            3. افتح الملف وثبّته
-          files: android/app/bin/*.apk
+            ### التثبيت:
+            1. حمّل ملف APK أدناه
+            2. على هاتفك: **الإعدادات → الأمان → مصادر غير معروفة → تفعيل**
+            3. افتح ملف APK وثبّته
+
+            ### المميزات:
+            - 9 مصادر إعلانات برلين (Gewobag, Degewo, Gesobau, WBM...)
+            - فلتر WBS Level (100 / 140 / 160 / 180 / 200 / 220)
+            - فلتر Jobcenter KdU تلقائي
+            - فتح الإعلان مباشرة في المتصفح
+
+            Built from commit `${{ github.sha }}`
+          files: ${{ steps.find_apk.outputs.apk_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: |
-            android/app/build.log
-            android/app/.buildozer/android/platform/android-sdk/licenses/
-          retention-days: 7
