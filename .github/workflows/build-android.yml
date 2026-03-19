@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-apk:
-    name: Build APK with Buildozer Docker
+    name: Build APK
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -15,14 +15,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cache buildozer global dir
+      - name: Cache buildozer global
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('android/app/buildozer.spec') }}-v3
-          restore-keys: buildozer-${{ runner.os }}-
+          key: buildozer-${{ hashFiles('android/app/buildozer.spec') }}-v4
+          restore-keys: buildozer-
 
-      - name: Build APK via Buildozer Docker
+      - name: Build with Buildozer
         uses: ArtemSBulgakov/buildozer-action@v1
         id: buildozer
         with:
@@ -36,24 +36,28 @@ jobs:
           path: ${{ steps.buildozer.outputs.filename }}
           retention-days: 60
 
-      - name: Create GitHub Release
+      - name: Create Release
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "android-build-${{ github.run_number }}"
-          name: "📱 WBS Berlin APK — Build #${{ github.run_number }}"
+          tag_name: "android-v${{ github.run_number }}"
+          name: "WBS Berlin APK — v${{ github.run_number }}"
           body: |
             ## تحميل تطبيق WBS Berlin
 
-            **التثبيت:**
-            1. حمّل ملف APK أدناه
-            2. على هاتفك: الإعدادات → الأمان → فعّل "مصادر غير معروفة"
-            3. افتح ملف APK
+            1. حمّل APK من الأسفل
+            2. الإعدادات → الأمان → فعّل "مصادر غير معروفة"
+            3. افتح الملف وثبّته
 
-            **المميزات:**
-            - 10 مصادر إعلانات برلين
-            - فلتر WBS Level (100-220)
-            - فلتر Jobcenter KdU
-            - فلتر الإيجار والغرف والمناطق
+            Built from `${{ github.sha }}`
           files: ${{ steps.buildozer.outputs.filename }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: android/app/.buildozer/logs/
+          retention-days: 7
