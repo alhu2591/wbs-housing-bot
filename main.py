@@ -1,6 +1,6 @@
 """
 WBS Housing Bot — Main Entry Point
-Hardened for 24/7 stability on Railway/Render.
+Works locally (python run_local.py) and on any server.
 """
 import asyncio
 import logging
@@ -24,19 +24,15 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
-async def _send_startup_message(app, stats: dict) -> None:
+async def _send_startup_message(app) -> None:
     try:
-        import os
-        ai    = "✅" if os.getenv("ANTHROPIC_API_KEY") else "⚠️ غير مفعّل"
-        proxy = "✅" if os.getenv("SCRAPER_API_KEY")   else "⚠️ غير مفعّل"
+        stats = await get_stats()
         await app.bot.send_message(
             chat_id=CHAT_ID,
             text=(
                 "🟢 *البوت بدأ العمل*\n"
                 "━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"🔄 كل {SCRAPE_INTERVAL} دقيقة\n"
-                f"🤖 الذكاء: {ai}\n"
-                f"🌐 ScraperAPI: {proxy}\n"
                 f"🗃 محفوظ: {stats.get('db_size', 0)}\n"
                 f"📨 مُرسل: {stats.get('total_sent', 0)}\n\n"
                 "استخدم /status · /help"
@@ -48,7 +44,6 @@ async def _send_startup_message(app, stats: dict) -> None:
 
 
 async def _heartbeat() -> None:
-    """Hourly liveness log — wrapped so DB errors never kill the job."""
     try:
         stats = await get_stats()
         logger.info(
@@ -62,38 +57,34 @@ async def _heartbeat() -> None:
 
 
 async def _error_handler(update, context) -> None:
-    """Global Telegram error handler — logs all unhandled PTB exceptions."""
-    logger.error("Telegram handler error: %s", context.error, exc_info=context.error)
+    logger.error("PTB error: %s", context.error, exc_info=context.error)
 
 
 async def main() -> None:
-    # ── Validate env ──────────────────────────────────────────────────────────
+    # ── Validate ──────────────────────────────────────────────────────────────
     if not BOT_TOKEN:
         logger.critical("Required env var BOT_TOKEN is missing. Exiting.")
         sys.exit(1)
     if not CHAT_ID:
-        logger.critical("CHAT_ID not set. Exiting.")
+        logger.critical("Required env var CHAT_ID is missing. Exiting.")
         sys.exit(1)
 
-    # ── Init DB ───────────────────────────────────────────────────────────────
+    # ── DB ────────────────────────────────────────────────────────────────────
     await init_db()
     await init_health_table()
-    stats = await get_stats()
 
-    # ── Build Telegram app ────────────────────────────────────────────────────
+    # ── Telegram app ──────────────────────────────────────────────────────────
     app = build_app()
-    app.add_error_handler(_error_handler)   # catch all unhandled PTB errors
+    app.add_error_handler(_error_handler)
     await app.initialize()
     await app.start()
 
-    # Register slash-command menu
     try:
         await app.bot.set_my_commands(BOT_COMMANDS)
-        logger.info("✅ Bot commands registered")
     except TelegramError as e:
         logger.warning("set_my_commands failed: %s", e)
 
-    # ── Notification callback with flood/retry handling ───────────────────────
+    # ── Notify callback with retry ────────────────────────────────────────────
     async def notify(listing: dict) -> None:
         text, keyboard = format_listing(listing)
         image_url = listing.get("image_url")
@@ -111,7 +102,7 @@ async def main() -> None:
                         )
                         return
                     except TelegramError:
-                        image_url = None  # fall through to text
+                        image_url = None
 
                 await app.bot.send_message(
                     chat_id=CHAT_ID,
@@ -123,70 +114,57 @@ async def main() -> None:
                 return
 
             except RetryAfter as e:
-                wait = e.retry_after + 1
-                logger.warning("Telegram flood: waiting %ds (attempt %d)", wait, attempt+1)
-                await asyncio.sleep(wait)
-
+                await asyncio.sleep(e.retry_after + 1)
             except (NetworkError, TimedOut) as e:
-                wait = 5 * (attempt + 1)
-                logger.warning("Telegram network error: %s — retry in %ds", e, wait)
-                await asyncio.sleep(wait)
-
+                if attempt < 2:
+                    await asyncio.sleep(5 * (attempt + 1))
+                else:
+                    logger.error("notify failed after 3 attempts: %s", e)
+                    return
             except TelegramError as e:
-                logger.error("Telegram send failed (no retry): %s", e)
+                logger.error("notify: %s", e)
                 return
-
-        logger.error("notify: gave up after 3 attempts for %s", listing.get("url","")[:60])
 
     set_notify_callback(notify)
 
-    # ── Health server (Railway healthcheck + /metrics) ────────────────────────
+    # ── Health server (for Railway/server deployments) ────────────────────────
     set_stats_fn(get_stats)
     asyncio.create_task(start_health_server(port=8080))
+
+    # ── Scheduler ─────────────────────────────────────────────────────────────
     scheduler = AsyncIOScheduler(timezone="Europe/Berlin")
 
-    def _job_error_listener(event):
-        logger.error(
-            "⚠️ Scheduler job '%s' raised: %s",
-            event.job_id,
-            event.exception,
-            exc_info=event.traceback,
-        )
+    def _job_error(event):
+        logger.error("Scheduler job '%s' error: %s", event.job_id, event.exception)
 
-    def _job_missed_listener(event):
-        logger.warning("⏰ Scheduler job '%s' missed at %s", event.job_id, event.scheduled_run_time)
+    def _job_missed(event):
+        logger.warning("Scheduler job '%s' missed", event.job_id)
 
-    scheduler.add_listener(_job_error_listener, EVENT_JOB_ERROR)
-    scheduler.add_listener(_job_missed_listener, EVENT_JOB_MISSED)
+    scheduler.add_listener(_job_error,  EVENT_JOB_ERROR)
+    scheduler.add_listener(_job_missed, EVENT_JOB_MISSED)
 
     scheduler.add_job(
-        run_once,
-        "interval",
+        run_once, "interval",
         minutes=SCRAPE_INTERVAL,
-        id="scrape_loop",
+        id="scrape",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=120,
     )
-    scheduler.add_job(
-        _heartbeat,
-        "interval",
-        hours=1,
-        id="heartbeat",
-        misfire_grace_time=300,
-    )
+    scheduler.add_job(_heartbeat, "interval", hours=1, id="heartbeat",
+                      misfire_grace_time=300)
     scheduler.start()
-    logger.info("✅ Scheduler started — every %d min", SCRAPE_INTERVAL)
+    logger.info("✅ Scheduler every %d min", SCRAPE_INTERVAL)
 
-    # ── Startup notification + first scrape (observed) ────────────────────────
-    await _send_startup_message(app, stats)
+    # ── First scrape + startup message ────────────────────────────────────────
+    await _send_startup_message(app)
     try:
-        await run_once()    # run directly, not as task — errors are logged
+        await run_once()
     except Exception as e:
         logger.error("First scrape failed: %s", e)
 
-    # ── Start polling with network timeouts ───────────────────────────────────
-    logger.info("🤖 Polling started")
+    # ── Polling ───────────────────────────────────────────────────────────────
+    logger.info("🤖 Bot polling…")
     await app.updater.start_polling(
         drop_pending_updates=True,
         allowed_updates=["message", "callback_query"],
@@ -208,6 +186,7 @@ async def main() -> None:
         try:
             loop.add_signal_handler(sig, _handle_signal)
         except (NotImplementedError, RuntimeError):
+            # Windows doesn't support add_signal_handler
             pass
 
     await stop_event.wait()
@@ -217,7 +196,7 @@ async def main() -> None:
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
-    logger.info("👋 Stopped cleanly.")
+    logger.info("👋 Stopped.")
 
 
 if __name__ == "__main__":

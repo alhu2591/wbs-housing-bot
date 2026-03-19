@@ -1,25 +1,15 @@
 """
-Base scraper — async HTTP with smart ScraperAPI routing.
-
-ScraperAPI routing strategy (to stay within free tier):
-  - Direct HTTP (no proxy): JSON API endpoints on gov sites
-  - ScraperAPI plain (1 credit): private sites / HTML fallback without JS
-  - ScraperAPI render_js (10 credits): only when JS rendering truly needed
-
-Set SCRAPER_API_KEY in env to enable proxy routing.
-Without it, all requests are direct (works on Oracle/VPS, fails on Railway datacenter IPs).
+Base HTTP scraper — direct requests, no proxy dependency.
+Designed for local execution where IPs are not blocked.
+Retry + exponential backoff + User-Agent rotation built in.
 """
 import asyncio
 import logging
 import random
 from typing import Optional
-from urllib.parse import urlencode
 
 import httpx
-from config.settings import (
-    REQUEST_TIMEOUT, MAX_RETRIES,
-    RETRY_WAIT_MIN, PROXY_URL, SCRAPER_API_KEY,
-)
+from config.settings import REQUEST_TIMEOUT, MAX_RETRIES, RETRY_WAIT_MIN, PROXY_URL
 
 logger = logging.getLogger(__name__)
 
@@ -28,43 +18,27 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
     "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
 ]
 
 
 def random_headers() -> dict:
     return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
-        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Cache-Control": "no-cache",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
+        "User-Agent":              random.choice(USER_AGENTS),
+        "Accept-Language":         "de-DE,de;q=0.9,en;q=0.8",
+        "Accept":                  "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Encoding":         "gzip, deflate, br",
+        "Cache-Control":           "no-cache",
+        "Pragma":                  "no-cache",
+        "Sec-Fetch-Dest":          "document",
+        "Sec-Fetch-Mode":          "navigate",
+        "Sec-Fetch-Site":          "none",
         "Upgrade-Insecure-Requests": "1",
     }
 
 
-def _proxy_url(url: str, render_js: bool = False) -> str:
-    """
-    Route through ScraperAPI only when key is set.
-    render_js=False: 1 credit (plain HTTP proxy)
-    render_js=True:  10 credits (headless Chrome)
-    """
-    if not SCRAPER_API_KEY:
-        return url
-    params: dict = {
-        "api_key":      SCRAPER_API_KEY,
-        "url":          url,
-        "country_code": "de",
-    }
-    if render_js:
-        params["render"] = "true"
-    return f"https://api.scraperapi.com/?{urlencode(params)}"
-
-
-def build_client(timeout: int = 60) -> httpx.AsyncClient:
-    """Build AsyncClient — compatible with all httpx versions."""
+def build_client(timeout: int = 30) -> httpx.AsyncClient:
+    """Build AsyncClient with optional proxy support."""
     kwargs: dict = {
         "headers":          random_headers(),
         "timeout":          timeout,
@@ -81,37 +55,31 @@ def build_client(timeout: int = 60) -> httpx.AsyncClient:
 async def fetch(
     url: str,
     client: Optional[httpx.AsyncClient] = None,
-    render_js: bool = False,
-    direct: bool = False,          # skip proxy entirely (for JSON APIs)
+    render_js: bool = False,   # kept for signature compatibility, ignored
+    direct: bool = False,      # kept for signature compatibility, ignored
 ) -> Optional[str]:
-    """
-    Fetch URL with retry + exponential backoff.
-    direct=True: bypass ScraperAPI (use for JSON API endpoints).
-    """
-    target   = url if direct else _proxy_url(url, render_js=render_js)
-    own      = client is None
+    """Fetch URL with retry + exponential backoff."""
+    own = client is None
     if own:
         client = build_client()
     try:
         for attempt in range(MAX_RETRIES):
             try:
-                resp = await client.get(target, headers=random_headers())
+                resp = await client.get(url, headers=random_headers())
                 resp.raise_for_status()
-                if len(resp.text) < 200:
-                    logger.debug("Short response (%d chars) for %s", len(resp.text), url[:60])
                 return resp.text
             except httpx.HTTPStatusError as e:
                 code = e.response.status_code
                 if code in (403, 429, 503) and attempt < MAX_RETRIES - 1:
                     wait = RETRY_WAIT_MIN * (2 ** attempt) + random.uniform(0, 1)
-                    logger.warning("HTTP %d %s — retry %d in %.1fs", code, url[:50], attempt + 1, wait)
+                    logger.warning("HTTP %d %s — retry %d in %.1fs", code, url[:55], attempt + 1, wait)
                     await asyncio.sleep(wait)
                 else:
                     raise
             except (httpx.TimeoutException, httpx.ConnectError) as e:
                 if attempt < MAX_RETRIES - 1:
                     wait = RETRY_WAIT_MIN * (2 ** attempt)
-                    logger.warning("Timeout %s — retry in %.1fs", url[:50], wait)
+                    logger.warning("Timeout %s — retry in %.1fs", url[:55], wait)
                     await asyncio.sleep(wait)
                 else:
                     raise
@@ -127,19 +95,15 @@ async def fetch(
 async def fetch_json(
     url: str,
     client: Optional[httpx.AsyncClient] = None,
-    direct: bool = False,
+    direct: bool = False,   # kept for signature compatibility, ignored
 ) -> Optional[dict | list]:
-    """
-    Fetch JSON endpoint.
-    direct=True: skip ScraperAPI (gov JSON APIs don't need proxy).
-    """
-    target = url if direct else _proxy_url(url, render_js=False)
-    own    = client is None
+    """Fetch JSON endpoint."""
+    own = client is None
     if own:
         client = build_client(timeout=20)
     try:
         hdrs = {**random_headers(), "Accept": "application/json, */*"}
-        resp = await client.get(target, headers=hdrs)
+        resp = await client.get(url, headers=hdrs)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:

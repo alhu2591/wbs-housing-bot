@@ -1,5 +1,5 @@
 import logging
-import logging.handlers   # ← كان ناقصاً — يسبب crash عند التشغيل
+import logging.handlers
 import os
 from config.settings import LOG_DIR
 
@@ -19,7 +19,7 @@ def setup_logging() -> None:
             )
         )
     except OSError:
-        pass   # /tmp may not support file logging on some hosts
+        pass   # read-only filesystem — stream only
 
     logging.basicConfig(level=logging.INFO, format=fmt, datefmt=datefmt, handlers=handlers)
 

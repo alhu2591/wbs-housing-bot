@@ -1,6 +1,7 @@
 """
-Scheduler — scrape → AI-enrich → filter → dedup → notify.
-Every step individually wrapped — one failure never kills the cycle.
+Scheduler — scrape → enrich → filter → dedup → notify.
+Pure local execution: no external API dependencies.
+Each enrichment step is individually isolated — one failure never kills the cycle.
 """
 import asyncio
 import json
@@ -12,17 +13,16 @@ from scrapers.image_fetcher import fetch_og_image
 from scrapers.circuit_breaker import get_breaker
 from filters import is_wbs, passes_price, passes_rooms, passes_area, score_listing, get_score_label
 from filters.social_filter import passes_jobcenter, passes_wohngeld, get_social_badge
-from filters.ai_analyzer import ai_analyze
-from filters.wbs_filter import extract_wbs_level
+from filters.wbs_filter import enrich, extract_wbs_level
 from database import (
-    is_known, are_known, save_listing, purge_old_listings,
+    are_known, save_listing, purge_old_listings,
     get_settings, record_success, record_error, increment_stats,
 )
 from config.settings import CHAT_ID, DEFAULT_MAX_PRICE
 
 logger     = logging.getLogger(__name__)
 _notify_cb = None
-_cycle     = 0          # exposed for /ping command
+_cycle     = 0   # exposed for /ping and /uptime
 
 
 def set_notify_callback(fn):
@@ -36,10 +36,10 @@ async def run_once() -> None:
     t0 = time.monotonic()
     logger.info("⏳ Cycle #%d — %d sources", _cycle, len(ALL_SCRAPERS))
 
-    # ── 1. Scrape all sources concurrently ────────────────────────────────────
+    # ── 1. Scrape concurrently ────────────────────────────────────────────────
     tasks   = [asyncio.create_task(_safe_scrape(fn)) for fn in ALL_SCRAPERS]
-    batches  = await asyncio.gather(*tasks, return_exceptions=True)
-    listings = []
+    batches = await asyncio.gather(*tasks, return_exceptions=True)
+    listings: list[dict] = []
     for result in batches:
         if isinstance(result, Exception):
             logger.error("Scrape task exception: %s", result)
@@ -67,15 +67,12 @@ async def run_once() -> None:
         areas = []
 
     if not active:
-        try:
-            await increment_stats(cycle=1)
-        except Exception:
-            pass
+        try: await increment_stats(cycle=1)
+        except Exception: pass
         return
 
-    # ── 3. Filter + batch dedup ───────────────────────────────────────────────
-    # Pre-filter by WBS/price/rooms/area first (cheap)
-    pre = []
+    # ── 3. Filter ─────────────────────────────────────────────────────────────
+    pre: list[dict] = []
     for listing in listings:
         try:
             if wbs_only and not listing.get("trusted_wbs") and not is_wbs(listing):
@@ -86,10 +83,7 @@ async def run_once() -> None:
                 continue
             if areas and not passes_area(listing, areas):
                 continue
-            # Social filters — OR logic:
-            # - Both enabled  → pass if Jobcenter OR Wohngeld qualifies
-            # - Only one      → must satisfy that one
-            # - None enabled  → no filter applied
+            # Social filters — OR logic: pass if either condition satisfied
             if jobcenter_mode or wohngeld_mode:
                 jc_ok = passes_jobcenter(listing, household_size) if jobcenter_mode else False
                 wg_ok = passes_wohngeld(listing, household_size)  if wohngeld_mode else False
@@ -99,54 +93,52 @@ async def run_once() -> None:
         except Exception as e:
             logger.warning("Filter error: %s", e)
 
-    # Batch dedup — 1 DB query instead of N
-    known_ids = await are_known([l["id"] for l in pre])
+    # Batch dedup (1 query instead of N)
+    known_ids  = await are_known([l["id"] for l in pre])
     candidates = [l for l in pre if l["id"] not in known_ids]
-
     logger.info("🔍 Candidates: %d", len(candidates))
 
-    # ── 4. Enrich each listing individually (one failure ≠ whole batch) ───────
-    enriched = []
+    # ── 4. Enrich (regex only, no external calls except image fetch) ──────────
+    enriched: list[dict] = []
     for listing in candidates:
+
         try:
-            listing = await ai_analyze(listing)
+            listing = enrich(listing)
         except Exception as e:
-            logger.warning("ai_analyze failed for %s: %s", listing.get("url","")[:50], e)
+            logger.warning("enrich %s: %s", listing.get("url","")[:50], e)
 
         try:
             if not listing.get("wbs_level"):
                 listing["wbs_level"] = extract_wbs_level(listing)
         except Exception as e:
-            logger.warning("extract_wbs_level error: %s", e)
+            logger.warning("extract_wbs_level: %s", e)
 
         try:
             if not listing.get("image_url"):
                 listing["image_url"] = await fetch_og_image(listing.get("url", ""))
-        except Exception as e:
-            logger.debug("fetch_og_image error: %s", e)
+        except Exception:
             listing["image_url"] = None
 
         try:
             listing["score"]       = score_listing(listing)
             listing["score_label"] = get_score_label(listing["score"])
-        except Exception as e:
+        except Exception:
             listing["score"] = 0
             listing["score_label"] = "📋 عادي"
 
-        # Attach Jobcenter/Wohngeld badge for display
         try:
-            jc_ok, wg_ok, social_badge = get_social_badge(listing, household_size)
+            jc_ok, wg_ok, badge = get_social_badge(listing, household_size)
             listing["jobcenter_ok"]  = jc_ok
             listing["wohngeld_ok"]   = wg_ok
-            listing["social_badge"]  = social_badge
+            listing["social_badge"]  = badge
             listing["household_size"] = household_size
-        except Exception as e:
+        except Exception:
             listing["social_badge"] = ""
 
         try:
             await save_listing(listing)
         except Exception as e:
-            logger.error("save_listing failed for %s: %s", listing.get("id"), e)
+            logger.error("save_listing %s: %s", listing.get("id"), e)
 
         enriched.append(listing)
 
@@ -167,27 +159,23 @@ async def run_once() -> None:
     try:
         await increment_stats(sent=sent, cycle=1)
     except Exception as e:
-        logger.error("increment_stats failed: %s", e)
+        logger.error("increment_stats: %s", e)
 
     try:
         await purge_old_listings()
     except Exception as e:
-        logger.error("purge_old_listings failed: %s", e)
+        logger.error("purge: %s", e)
 
-    logger.info(
-        "✅ Cycle #%d done %.1fs — sent=%d new=%d raw=%d",
-        _cycle, time.monotonic()-t0, sent, len(enriched), len(listings),
-    )
+    logger.info("✅ Cycle #%d %.1fs — sent=%d new=%d raw=%d",
+                _cycle, time.monotonic()-t0, sent, len(enriched), len(listings))
 
 
 async def _safe_scrape(fn) -> list:
     source = fn.__module__.split(".")[-1]
     cb     = get_breaker(source)
-
     if not cb.allow():
-        logger.debug("⚡ Circuit OPEN — skipping %s", source)
+        logger.debug("⚡ CB OPEN — skipping %s", source)
         return []
-
     try:
         results = await fn()
         cb.record_success()
@@ -196,8 +184,6 @@ async def _safe_scrape(fn) -> list:
     except Exception as e:
         cb.record_failure()
         logger.error("Scraper %s: %s", source, e)
-        try:
-            await record_error(source, str(e))
-        except Exception:
-            pass
+        try: await record_error(source, str(e))
+        except Exception: pass
         return []

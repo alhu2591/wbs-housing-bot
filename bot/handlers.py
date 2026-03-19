@@ -31,7 +31,7 @@ from filters.social_filter import (
     JOBCENTER_KDU_WARMMIETE, WOHNGELD_RENT_LIMITS,
     get_jobcenter_limit, get_wohngeld_limit, get_size_limit,
 )
-from config.settings import CHAT_ID, BOT_TOKEN, SCRAPER_API_KEY
+from config.settings import CHAT_ID, BOT_TOKEN
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +145,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not _is_owner(update): return await _deny(update)
     s         = await get_settings(str(update.effective_chat.id))
     areas     = _get_areas(s)
-    ai        = "✅" if os.getenv("ANTHROPIC_API_KEY") else "⚠️"
-    proxy     = "✅" if SCRAPER_API_KEY else "⚠️"
     active    = "🟢 يعمل" if s.get("active") else "🔴 موقوف"
     wbs       = "✅ WBS فقط" if s.get("wbs_only", 0) else "🔓 كل الشقق"
     rooms     = s.get("min_rooms") or "أي عدد"
@@ -170,7 +168,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"🏛 Jobcenter KdU: {jc_mode} حد {jc_lim:.0f}€ · {sz_lim}م²\n"
         f"🏦 Wohngeld:     {wg_mode} حد {wg_lim:.0f}€\n"
         f"🤖 الذكاء:       {ai}\n"
-        f"🌐 ScraperAPI:   {proxy}\n\n"
+        "\n"
         "_/social لإدارة Jobcenter/Wohngeld · /household للأفراد_",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=MAIN_KEYBOARD,
@@ -491,32 +489,6 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=MAIN_KEYBOARD,
     )
-
-
-# ── /check_proxy ──────────────────────────────────────────────────────────────
-
-async def cmd_check_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_owner(update): return await _deny(update)
-    if not SCRAPER_API_KEY:
-        await update.message.reply_text(
-            "⚠️ *ScraperAPI غير مفعّل*\nRailway → Variables → `SCRAPER_API_KEY`",
-            parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD); return
-    await update.message.reply_text("🔍 جاري الاختبار…", reply_markup=MAIN_KEYBOARD)
-    try:
-        import httpx
-        from urllib.parse import urlencode
-        params = urlencode({"api_key": SCRAPER_API_KEY, "url": "https://httpbin.org/ip"})
-        async with httpx.AsyncClient(timeout=20) as c:
-            r = await c.get(f"https://api.scraperapi.com/?{params}")
-        if r.status_code == 200:
-            ip = r.json().get("origin", "?")
-            await update.message.reply_text(
-                f"✅ *ScraperAPI يعمل*\n🌐 IP: `{ip}`",
-                parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
-        else:
-            await update.message.reply_text(f"❌ HTTP {r.status_code}", reply_markup=MAIN_KEYBOARD)
-    except Exception as e:
-        await update.message.reply_text(f"❌ {e}", reply_markup=MAIN_KEYBOARD)
 
 
 # ── Reply keyboard handler ────────────────────────────────────────────────────
@@ -877,7 +849,6 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("on",           cmd_on))
     app.add_handler(CommandHandler("off",          cmd_off))
     app.add_handler(CommandHandler("check",        cmd_check))
-    app.add_handler(CommandHandler("check_proxy",  cmd_check_proxy))
     app.add_handler(CommandHandler("ping",         cmd_ping))
     app.add_handler(CommandHandler("uptime",       cmd_uptime))
     app.add_handler(CommandHandler("reset",        cmd_reset))
