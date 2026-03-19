@@ -591,8 +591,15 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
     size  = listing.get("size_m2")
     s_str = f"{size:.0f} م²" if size else None
 
-    # Location
-    loc = (listing.get("district") or listing.get("location") or "Berlin").strip()
+    # Location — clean any HTML artifacts that slipped through
+    import re as _re
+    def _clean(t: str) -> str:
+        t = _re.sub(r'\s+', ' ', str(t or ""))
+        t = _re.sub(r'\s*\|\s*', ', ', t)
+        t = _re.sub(r',\s*,+', ',', t)
+        return t.strip(' ,|•–-/')[:60]
+
+    loc = _clean(listing.get("district") or listing.get("location") or "Berlin")
 
     # WBS
     wbs_level = listing.get("wbs_level")

@@ -12,6 +12,25 @@ logger = logging.getLogger(__name__)
 _NON_PRICE = re.compile(r"^(preis auf anfrage|auf anfrage|n\.a\.|nan|none|-|—|–)$", re.I)
 
 
+def clean_text(text: str, max_len: int = 80) -> str:
+    """
+    Remove HTML artifacts, pipe separators, extra whitespace, newlines.
+    Used for location and title fields scraped from raw HTML.
+    """
+    if not text:
+        return ""
+    t = str(text)
+    # Collapse newlines / tabs / multiple spaces into single space
+    t = re.sub(r'\s+', ' ', t)
+    # Convert pipe separators (from get_text(" | ")) to comma
+    t = re.sub(r'\s*\|\s*', ', ', t)
+    # Remove repeated commas
+    t = re.sub(r',\s*,+', ',', t)
+    # Strip leading/trailing junk
+    t = t.strip(' ,|•–-/')
+    return t[:max_len].strip()
+
+
 def parse_price(raw) -> float | None:
     """
     Smart German price parser.
@@ -111,9 +130,9 @@ def build_listing(
 
     return {
         "id":          make_id(url),
-        "title":       (title or "").strip()[:200],
+        "title":       clean_text(title or "", max_len=200),
         "price":       parse_price(price),
-        "location":    (location or "Berlin").strip(),
+        "location":    clean_text(location or "Berlin", max_len=60),
         "rooms":       parse_rooms(rooms),
         "description": (description or "").strip()[:1000],
         "wbs_label":   wbs_label,
