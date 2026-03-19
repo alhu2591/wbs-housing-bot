@@ -1,6 +1,7 @@
 """
 WBS Housing Bot — Telegram handlers.
-Professional customization UI: sources, areas, price, rooms, WBS, social filters.
+Professional UI with inline keyboards for all settings.
+No external API dependencies.
 """
 import json
 import logging
@@ -24,91 +25,89 @@ from database import get_settings, upsert_settings, get_stats, get_recent_listin
 from database.health import get_all_health
 from filters.social_filter import (
     get_jobcenter_limit, get_wohngeld_limit, get_size_limit,
-    get_full_requirements, get_jobcenter_min_rooms, get_wohngeld_min_rooms,
+    get_full_requirements,
 )
 from config.settings import CHAT_ID, BOT_TOKEN
 
 logger = logging.getLogger(__name__)
-
 _BOT_START    = _time.monotonic()
 _BOT_START_DT = datetime.now(timezone.utc)
 
-# ── Source metadata ──────────────────────────────────────────────────────────
+# ── Source registry ──────────────────────────────────────────────────────────
 SOURCE_META = {
-    "gewobag":            ("Gewobag",           "🏛", True),
-    "degewo":             ("Degewo",            "🏛", True),
-    "howoge":             ("Howoge",            "🏛", True),
-    "stadtundland":       ("Stadt und Land",    "🏛", True),
-    "deutschewohnen":     ("Deutsche Wohnen",   "🏛", True),
-    "berlinovo":          ("Berlinovo",         "🏛", True),
-    "immoscout":          ("ImmoScout24",       "🔍", False),
-    "wggesucht":          ("WG-Gesucht",        "🔍", False),
-    "ebay_kleinanzeigen": ("Kleinanzeigen",     "🔍", False),
-    "immowelt":           ("Immowelt",          "🔍", False),
+    "gewobag":            ("Gewobag",         "🏛", True),
+    "degewo":             ("Degewo",          "🏛", True),
+    "howoge":             ("Howoge",          "🏛", True),
+    "stadtundland":       ("Stadt und Land",  "🏛", True),
+    "deutschewohnen":     ("Deutsche Wohnen", "🏛", True),
+    "berlinovo":          ("Berlinovo",       "🏛", True),
+    "immoscout":          ("ImmoScout24",     "🔍", False),
+    "wggesucht":          ("WG-Gesucht",      "🔍", False),
+    "ebay_kleinanzeigen": ("Kleinanzeigen",   "🔍", False),
+    "immowelt":           ("Immowelt",        "🔍", False),
 }
 ALL_SOURCES = list(SOURCE_META.keys())
 GOV_SOURCES = {k for k, v in SOURCE_META.items() if v[2]}
 
 # ── Berlin districts ─────────────────────────────────────────────────────────
 BERLIN_DISTRICTS = [
-    ("Mitte",             "مركز برلين"),
-    ("Friedrichshain",    "فريدريشهاين"),
-    ("Kreuzberg",         "كروتسبرغ"),
-    ("Prenzlauer Berg",   "برينتسلاور بيرغ"),
-    ("Charlottenburg",    "شارلوتنبورغ"),
-    ("Wilmersdorf",       "فيلمرسدورف"),
-    ("Spandau",           "شباندو"),
-    ("Steglitz",          "شتيغليتز"),
-    ("Zehlendorf",        "تسيلندورف"),
-    ("Tempelhof",         "تمبلهوف"),
-    ("Schöneberg",        "شونيبيرغ"),
-    ("Neukölln",          "نيوكولن"),
-    ("Treptow",           "تريبتو"),
-    ("Köpenick",          "كوبينيك"),
-    ("Marzahn",           "مارتسان"),
-    ("Hellersdorf",       "هيلرسدورف"),
-    ("Lichtenberg",       "ليشتنبرغ"),
-    ("Weißensee",         "فايسنزي"),
-    ("Pankow",            "بانكو"),
-    ("Reinickendorf",     "راينيكندورف"),
-    ("Wedding",           "فيدينغ"),
-    ("Moabit",            "موابيت"),
+    ("Mitte",           "Mitte"),
+    ("Friedrichshain",  "Friedrichshain"),
+    ("Kreuzberg",       "Kreuzberg"),
+    ("Prenzlauer Berg", "Prenzlauer Berg"),
+    ("Charlottenburg",  "Charlottenburg"),
+    ("Wilmersdorf",     "Wilmersdorf"),
+    ("Spandau",         "Spandau"),
+    ("Steglitz",        "Steglitz"),
+    ("Zehlendorf",      "Zehlendorf"),
+    ("Tempelhof",       "Tempelhof"),
+    ("Schöneberg",      "Schöneberg"),
+    ("Neukölln",        "Neukölln"),
+    ("Treptow",         "Treptow"),
+    ("Köpenick",        "Köpenick"),
+    ("Marzahn",         "Marzahn"),
+    ("Hellersdorf",     "Hellersdorf"),
+    ("Lichtenberg",     "Lichtenberg"),
+    ("Weißensee",       "Weißensee"),
+    ("Pankow",          "Pankow"),
+    ("Reinickendorf",   "Reinickendorf"),
+    ("Wedding",         "Wedding"),
+    ("Moabit",          "Moabit"),
 ]
 
-# ── Persistent bottom keyboard ───────────────────────────────────────────────
+# ── Bottom keyboard ──────────────────────────────────────────────────────────
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("📊 الحالة"),       KeyboardButton("📈 الإحصائيات")],
-        [KeyboardButton("⚙️ إعدادات"),      KeyboardButton("🔍 المصادر")],
-        [KeyboardButton("✅ WBS فقط"),      KeyboardButton("🔓 كل الشقق")],
-        [KeyboardButton("🟢 تشغيل"),        KeyboardButton("🔴 إيقاف")],
+        [KeyboardButton("📊 الحالة"),      KeyboardButton("📈 الإحصائيات")],
+        [KeyboardButton("⚙️ إعدادات"),    KeyboardButton("🔍 المصادر")],
+        [KeyboardButton("✅ WBS فقط"),    KeyboardButton("🔓 كل الشقق")],
+        [KeyboardButton("🟢 تشغيل"),      KeyboardButton("🔴 إيقاف")],
     ],
     resize_keyboard=True,
     input_field_placeholder="اكتب أمراً أو اضغط زراً…",
 )
 
-# ── Bot commands ─────────────────────────────────────────────────────────────
 BOT_COMMANDS = [
-    BotCommand("start",     "تشغيل البوت والمساعدة"),
-    BotCommand("status",    "الحالة الكاملة والإعدادات"),
-    BotCommand("settings",  "لوحة التخصيص الرئيسية"),
-    BotCommand("sources",   "اختيار المواقع التي يراقبها البوت"),
-    BotCommand("areas",     "اختيار مناطق برلين"),
-    BotCommand("set_price", "تحديد أقصى إيجار"),
-    BotCommand("set_rooms", "تحديد أقل عدد غرف"),
-    BotCommand("schedule",  "ساعات الهدوء — إيقاف الإشعارات ليلاً"),
+    BotCommand("start",     "تشغيل البوت"),
+    BotCommand("status",    "الحالة والإعدادات"),
+    BotCommand("settings",  "لوحة التخصيص"),
+    BotCommand("sources",   "اختيار المواقع"),
+    BotCommand("areas",     "اختيار المناطق"),
+    BotCommand("set_price", "أقصى إيجار"),
+    BotCommand("set_rooms", "أقل غرف"),
+    BotCommand("schedule",  "ساعات الهدوء"),
     BotCommand("social",    "فلاتر Jobcenter وWohngeld"),
     BotCommand("household", "عدد أفراد الأسرة"),
-    BotCommand("wbs_on",    "عرض شقق WBS فقط"),
-    BotCommand("wbs_off",   "عرض كل الشقق"),
+    BotCommand("wbs_on",    "WBS فقط"),
+    BotCommand("wbs_off",   "كل الشقق"),
     BotCommand("on",        "تشغيل الإشعارات"),
     BotCommand("off",       "إيقاف الإشعارات"),
-    BotCommand("stats",     "إحصائيات البوت"),
+    BotCommand("stats",     "إحصائيات"),
     BotCommand("last",      "آخر إعلانات"),
-    BotCommand("check",     "فحص صحة المصادر"),
-    BotCommand("ping",      "اختبار سرعة الاستجابة"),
+    BotCommand("check",     "فحص المصادر"),
+    BotCommand("ping",      "اختبار الاستجابة"),
     BotCommand("uptime",    "مدة التشغيل"),
-    BotCommand("reset",     "إعادة جميع الإعدادات للافتراضي"),
+    BotCommand("reset",     "إعادة الضبط"),
 ]
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -119,25 +118,27 @@ def _is_owner(update: Update) -> bool:
 async def _deny(update: Update) -> None:
     await update.message.reply_text("⛔ غير مصرح.")
 
-def _time_ago(iso: str | None) -> str:
+def _time_ago(iso) -> str:
     if not iso: return "—"
     try:
         dt   = datetime.fromisoformat(iso)
         diff = int((datetime.utcnow() - dt).total_seconds())
-        if diff < 60:     return f"منذ {diff}ث"
-        elif diff < 3600: return f"منذ {diff//60}د"
-        elif diff < 86400:return f"منذ {diff//3600}س"
-        else:             return f"منذ {diff//86400} يوم"
+        if diff < 60:      return f"منذ {diff}ث"
+        elif diff < 3600:  return f"منذ {diff//60}د"
+        elif diff < 86400: return f"منذ {diff//3600}س"
+        else:              return f"منذ {diff//86400} يوم"
     except Exception:
         return "—"
 
-def _jl(raw) -> list[str]:
-    """Safe JSON list load."""
+def _jl(raw) -> list:
     try:
         v = json.loads(raw or "[]")
         return v if isinstance(v, list) else []
     except Exception:
         return []
+
+def _sep() -> str:
+    return "━━━━━━━━━━━━━━━━━━━━"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -147,15 +148,14 @@ def _jl(raw) -> list[str]:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
     await update.message.reply_text(
-        "🏠 *بوت شقق WBS برلين*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "أراقب 10 مواقع إعلانات برلين كل 5 دقائق\n"
-        "وأرسل فقط الشقق التي تناسب إعداداتك.\n\n"
-        "📋 *أبرز الأوامر:*\n"
+        "\U0001f3e0 *بوت شقق WBS برلين*\n" + _sep() + "\n\n"
+        "أراقب 10 مواقع كل 5 دقائق وأرسل\n"
+        "فقط الشقق التي تناسب إعداداتك.\n\n"
+        "📋 *الأوامر الرئيسية:*\n"
         "├ /settings — لوحة التخصيص الكاملة\n"
         "├ /sources  — اختيار المواقع\n"
         "├ /areas    — اختيار المناطق\n"
-        "├ /social   — فلاتر Jobcenter/Wohngeld\n"
+        "├ /social   — Jobcenter/Wohngeld\n"
         "├ /status   — عرض كل الإعدادات\n"
         "└ /reset    — إعادة الضبط\n\n"
         "✅ *اضغط ⚙️ إعدادات للبدء*",
@@ -168,142 +168,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /settings — Main customization hub
+# Settings hub — /settings
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_owner(update): return await _deny(update)
-    s = await get_settings(str(update.effective_chat.id))
-    await _send_settings_menu(update.message, s)
-
-async def _send_settings_menu(msg, s: dict) -> None:
-    """Render the main settings inline menu."""
-    sources    = _jl(s.get("sources"))
-    areas      = _jl(s.get("areas"))
-    n          = int(s.get("household_size") or 1)
-    jc         = "✅" if s.get("jobcenter_mode") else "❌"
-    wg         = "✅" if s.get("wohngeld_mode")  else "❌"
-    wbs        = "✅" if s.get("wbs_only")        else "❌"
-    active     = "🟢" if s.get("active", 1)       else "🔴"
-    price      = s.get("max_price", 600)
-    rooms      = s.get("min_rooms") or 0
-    qs         = int(s.get("quiet_start", -1))
-    qe         = int(s.get("quiet_end",   -1))
-    mpc        = int(s.get("max_per_cycle", 10))
-
-    src_lbl    = f"{len(sources)}/{len(ALL_SOURCES)}" if sources else "الكل"
-    area_lbl   = f"{len(areas)} منطقة" if areas else "كل برلين"
-    rooms_lbl  = f"≥{rooms:.0f}" if rooms else "أي"
-    qs_lbl     = f"{qs:02d}:00–{qe:02d}:00" if qs >= 0 else "—"
-
-    keyboard = InlineKeyboardMarkup([
-        # Row 1
-        [
-            InlineKeyboardButton(f"🌐 المواقع [{src_lbl}]",    callback_data="cfg:sources"),
-            InlineKeyboardButton(f"📍 المناطق [{area_lbl}]",   callback_data="cfg:areas"),
-        ],
-        # Row 2
-        [
-            InlineKeyboardButton(f"💰 الإيجار ≤{price:.0f}€", callback_data="cfg:price"),
-            InlineKeyboardButton(f"🛏 الغرف [{rooms_lbl}]",   callback_data="cfg:rooms"),
-        ],
-        # Row 3
-        [
-            InlineKeyboardButton(f"📋 WBS [{wbs}]",            callback_data="cfg:wbs"),
-            InlineKeyboardButton(f"👨‍👩‍👧 الأسرة [{n} فرد]",      callback_data="cfg:household"),
-        ],
-        # Row 4
-        [
-            InlineKeyboardButton(f"🏛 Jobcenter [{jc}]",       callback_data="cfg:social"),
-            InlineKeyboardButton(f"🏦 Wohngeld [{wg}]",        callback_data="cfg:social"),
-        ],
-        # Row 5
-        [
-            InlineKeyboardButton(f"🌙 هدوء [{qs_lbl}]",        callback_data="cfg:schedule"),
-            InlineKeyboardButton(f"📬 حد [{mpc}/دورة]",        callback_data="cfg:maxpc"),
-        ],
-        # Row 6
-        [
-            InlineKeyboardButton(f"🔔 الإشعارات [{active}]",   callback_data="cfg:toggle"),
-            InlineKeyboardButton("🔄 إعادة الضبط",             callback_data="cfg:reset"),
-        ],
-        [InlineKeyboardButton("❌ إغلاق", callback_data="cfg:close")],
-    ])
-
-    await msg.reply_text(
-        "⚙️ *لوحة التخصيص*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "اضغط أي خيار لتعديله:",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=keyboard,
-    )
-
-
-async def callback_cfg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Dispatch from main settings menu."""
-    q = update.callback_query
-    await q.answer()
-    if str(q.from_user.id) != str(CHAT_ID): return
-    data    = q.data.split(":", 1)[1]
-    chat_id = str(q.message.chat_id)
-
-    if data == "close":
-        await q.delete_message(); return
-
-    if data == "toggle":
-        s = await get_settings(chat_id)
-        new = 0 if s.get("active", 1) else 1
-        await upsert_settings(chat_id, active=new)
-        await q.answer("🟢 مفعّل" if new else "🔴 موقوف", show_alert=False)
-        s["active"] = new
-        await _edit_settings_menu(q, s); return
-
-    if data == "reset":
-        await _do_reset(chat_id)
-        await q.answer("✅ تم إعادة الضبط")
-        s = await get_settings(chat_id)
-        await _edit_settings_menu(q, s); return
-
-    if data == "wbs":
-        s = await get_settings(chat_id)
-        new = 0 if s.get("wbs_only") else 1
-        await upsert_settings(chat_id, wbs_only=new)
-        s["wbs_only"] = new
-        await _edit_settings_menu(q, s); return
-
-    if data == "price":
-        await q.delete_message()
-        await _show_price_menu(q.message.chat_id, context); return
-
-    if data == "rooms":
-        await q.delete_message()
-        await _show_rooms_menu(q.message.chat_id, context); return
-
-    if data == "sources":
-        s = await get_settings(chat_id)
-        await _edit_sources_menu(q, s); return
-
-    if data == "areas":
-        s = await get_settings(chat_id)
-        await _edit_areas_menu(q, s); return
-
-    if data == "household":
-        await _edit_household_menu(q); return
-
-    if data == "social":
-        s = await get_settings(chat_id)
-        await _edit_social_menu(q, s); return
-
-    if data == "schedule":
-        s = await get_settings(chat_id)
-        await _edit_schedule_menu(q, s); return
-
-    if data == "maxpc":
-        s = await get_settings(chat_id)
-        await _edit_maxpc_menu(q, s); return
-
-
-async def _edit_settings_menu(q, s: dict) -> None:
+def _build_settings_keyboard(s: dict) -> InlineKeyboardMarkup:
     sources   = _jl(s.get("sources"))
     areas     = _jl(s.get("areas"))
     n         = int(s.get("household_size") or 1)
@@ -311,277 +179,217 @@ async def _edit_settings_menu(q, s: dict) -> None:
     wg        = "✅" if s.get("wohngeld_mode")  else "❌"
     wbs       = "✅" if s.get("wbs_only")        else "❌"
     active    = "🟢" if s.get("active", 1)       else "🔴"
-    price     = s.get("max_price", 600)
-    rooms     = s.get("min_rooms") or 0
+    price     = float(s.get("max_price") or 600)
+    rooms     = float(s.get("min_rooms") or 0)
     qs        = int(s.get("quiet_start", -1))
     qe        = int(s.get("quiet_end",   -1))
-    mpc       = int(s.get("max_per_cycle", 10))
+    mpc       = int(s.get("max_per_cycle") or 10)
     src_lbl   = f"{len(sources)}/{len(ALL_SOURCES)}" if sources else "الكل"
     area_lbl  = f"{len(areas)} منطقة" if areas else "كل برلين"
-    rooms_lbl = f"≥{rooms:.0f}" if rooms else "أي"
-    qs_lbl    = f"{qs:02d}:00–{qe:02d}:00" if qs >= 0 else "—"
+    rooms_lbl = f">={rooms:.0f}" if rooms else "أي"
+    qs_lbl    = f"{qs:02d}-{qe:02d}" if qs >= 0 else "—"
 
-    keyboard = InlineKeyboardMarkup([
+    return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(f"🌐 المواقع [{src_lbl}]",    callback_data="cfg:sources"),
-            InlineKeyboardButton(f"📍 المناطق [{area_lbl}]",   callback_data="cfg:areas"),
+            InlineKeyboardButton(f"🌐 مواقع [{src_lbl}]",   callback_data="cfg:sources"),
+            InlineKeyboardButton(f"📍 مناطق [{area_lbl}]",  callback_data="cfg:areas"),
         ],
         [
-            InlineKeyboardButton(f"💰 الإيجار ≤{price:.0f}€", callback_data="cfg:price"),
-            InlineKeyboardButton(f"🛏 الغرف [{rooms_lbl}]",   callback_data="cfg:rooms"),
+            InlineKeyboardButton(f"💰 اجار <={price:.0f}€", callback_data="cfg:price"),
+            InlineKeyboardButton(f"🛏 غرف [{rooms_lbl}]",   callback_data="cfg:rooms"),
         ],
         [
-            InlineKeyboardButton(f"📋 WBS [{wbs}]",            callback_data="cfg:wbs"),
-            InlineKeyboardButton(f"👨‍👩‍👧 الأسرة [{n} فرد]",      callback_data="cfg:household"),
+            InlineKeyboardButton(f"📋 WBS [{wbs}]",          callback_data="cfg:wbs"),
+            InlineKeyboardButton(f"👥 اسرة [{n}]",           callback_data="cfg:household"),
         ],
         [
-            InlineKeyboardButton(f"🏛 Jobcenter [{jc}]",       callback_data="cfg:social"),
-            InlineKeyboardButton(f"🏦 Wohngeld [{wg}]",        callback_data="cfg:social"),
+            InlineKeyboardButton(f"🏛 Jobcenter [{jc}]",     callback_data="cfg:social"),
+            InlineKeyboardButton(f"🏦 Wohngeld [{wg}]",      callback_data="cfg:social"),
         ],
         [
-            InlineKeyboardButton(f"🌙 هدوء [{qs_lbl}]",        callback_data="cfg:schedule"),
-            InlineKeyboardButton(f"📬 حد [{mpc}/دورة]",        callback_data="cfg:maxpc"),
+            InlineKeyboardButton(f"🌙 هدوء [{qs_lbl}]",     callback_data="cfg:schedule"),
+            InlineKeyboardButton(f"📬 حد [{mpc}/دورة]",     callback_data="cfg:maxpc"),
         ],
         [
-            InlineKeyboardButton(f"🔔 الإشعارات [{active}]",   callback_data="cfg:toggle"),
-            InlineKeyboardButton("🔄 إعادة الضبط",             callback_data="cfg:reset"),
+            InlineKeyboardButton(f"🔔 [{active}]",           callback_data="cfg:toggle"),
+            InlineKeyboardButton("🔄 إعادة الضبط",           callback_data="cfg:reset"),
         ],
         [InlineKeyboardButton("❌ إغلاق", callback_data="cfg:close")],
     ])
-    try:
-        await q.edit_message_reply_markup(reply_markup=keyboard)
-    except Exception:
-        pass
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Sources
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _sources_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
-    """Inline keyboard showing all 10 sources with toggle state."""
-    rows = []
-    items = list(SOURCE_META.items())
-    for i in range(0, len(items), 2):
-        row = []
-        for src, (name, icon, is_gov) in items[i:i+2]:
-            on   = not selected or src in selected
-            tick = "✅" if on else "☐"
-            gov  = "🏛" if is_gov else "🔍"
-            row.append(InlineKeyboardButton(
-                f"{tick} {gov} {name}",
-                callback_data=f"src:toggle:{src}",
-            ))
-        rows.append(row)
-    rows.append([
-        InlineKeyboardButton("✅ تفعيل الكل",  callback_data="src:all"),
-        InlineKeyboardButton("🏛 حكومية فقط",  callback_data="src:gov"),
-    ])
-    rows.append([InlineKeyboardButton("💾 حفظ", callback_data="src:save")])
-    return InlineKeyboardMarkup(rows)
-
-
-def _sources_text(selected: list[str]) -> str:
-    active = [SOURCE_META[s][0] for s in ALL_SOURCES if (not selected or s in selected)]
-    inactive = [SOURCE_META[s][0] for s in ALL_SOURCES if selected and s not in selected]
-    t = "🌐 *اختيار المواقع*\n━━━━━━━━━━━━━━━━━━━━\n\n"
-    t += f"مفعّل ({len(active)}): " + " · ".join(active) + "\n"
-    if inactive:
-        t += f"مُعطّل ({len(inactive)}): " + " · ".join(inactive) + "\n"
-    t += "\n_اضغط موقعاً لتفعيله أو تعطيله:_"
-    return t
-
-
-async def cmd_sources(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
-    s        = await get_settings(str(update.effective_chat.id))
-    selected = _jl(s.get("sources"))
+    s  = await get_settings(str(update.effective_chat.id))
+    kb = _build_settings_keyboard(s)
     await update.message.reply_text(
-        _sources_text(selected),
+        "⚙️ *لوحة التخصيص*\n" + _sep() + "\n"
+        "اضغط أي خيار لتعديله:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_sources_keyboard(selected),
+        reply_markup=kb,
     )
 
 
-async def _edit_sources_menu(q, s: dict) -> None:
-    selected = _jl(s.get("sources"))
+async def _refresh_settings(q, s: dict) -> None:
     try:
-        await q.edit_message_text(
-            _sources_text(selected),
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_sources_keyboard(selected),
-        )
+        await q.edit_message_reply_markup(reply_markup=_build_settings_keyboard(s))
     except Exception:
         pass
 
 
-async def callback_src(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
+async def callback_cfg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q       = update.callback_query
     await q.answer()
     if str(q.from_user.id) != str(CHAT_ID): return
     chat_id = str(q.message.chat_id)
-    action  = q.data.split(":", 2)
+    data    = q.data.split(":", 1)[1]
 
-    s        = await get_settings(chat_id)
-    selected = _jl(s.get("sources"))
+    if data == "close":
+        await q.delete_message(); return
 
-    if action[1] == "toggle":
-        src = action[2]
-        if src in selected:
-            selected.remove(src)
-        else:
-            selected.append(src)
-        # If all selected, clear (= all)
-        if set(selected) == set(ALL_SOURCES):
-            selected = []
-        await upsert_settings(chat_id, sources=json.dumps(selected))
-        s["sources"] = json.dumps(selected)
-        await _edit_sources_menu(q, s)
+    if data == "toggle":
+        s   = await get_settings(chat_id)
+        new = 0 if s.get("active", 1) else 1
+        await upsert_settings(chat_id, active=new)
+        s["active"] = new
+        await _refresh_settings(q, s); return
 
-    elif action[1] == "all":
-        selected = []
-        await upsert_settings(chat_id, sources="[]")
-        s["sources"] = "[]"
-        await _edit_sources_menu(q, s)
+    if data == "wbs":
+        s   = await get_settings(chat_id)
+        new = 0 if s.get("wbs_only") else 1
+        await upsert_settings(chat_id, wbs_only=new)
+        s["wbs_only"] = new
+        await _refresh_settings(q, s); return
 
-    elif action[1] == "gov":
-        selected = list(GOV_SOURCES)
-        await upsert_settings(chat_id, sources=json.dumps(selected))
-        s["sources"] = json.dumps(selected)
-        await _edit_sources_menu(q, s)
+    if data == "reset":
+        await _do_reset(chat_id)
+        s = await get_settings(chat_id)
+        await q.answer("✅ تم إعادة الضبط")
+        await _refresh_settings(q, s); return
 
-    elif action[1] == "save":
-        lbl = f"{len(selected)}/{len(ALL_SOURCES)}" if selected else "الكل"
-        await q.answer(f"✅ تم الحفظ — {lbl} مواقع", show_alert=True)
-        await q.delete_message()
+    s = await get_settings(chat_id)
+
+    if data == "price":
+        cur = float(s.get("max_price") or 600)
+        try:
+            await q.edit_message_text(
+                _price_text(cur),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_price_keyboard(cur),
+            )
+        except Exception: pass
+        return
+
+    if data == "rooms":
+        cur = float(s.get("min_rooms") or 0)
+        try:
+            await q.edit_message_text(
+                _rooms_text(cur),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_rooms_keyboard(cur),
+            )
+        except Exception: pass
+        return
+
+    if data == "sources":
+        sel = _jl(s.get("sources"))
+        try:
+            await q.edit_message_text(
+                _sources_text(sel),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_sources_keyboard(sel),
+            )
+        except Exception: pass
+        return
+
+    if data == "areas":
+        sel = _jl(s.get("areas"))
+        try:
+            await q.edit_message_text(
+                _areas_text(sel),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_areas_keyboard(sel),
+            )
+        except Exception: pass
+        return
+
+    if data == "household":
+        cur = int(s.get("household_size") or 1)
+        try:
+            await q.edit_message_text(
+                _household_text(cur),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_household_keyboard(cur),
+            )
+        except Exception: pass
+        return
+
+    if data == "social":
+        try:
+            await q.edit_message_text(
+                _social_text(s),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_social_keyboard(s),
+            )
+        except Exception: pass
+        return
+
+    if data == "schedule":
+        try:
+            await q.edit_message_text(
+                _schedule_text(s),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_schedule_keyboard(s, phase="start"),
+            )
+        except Exception: pass
+        return
+
+    if data == "maxpc":
+        cur = int(s.get("max_per_cycle") or 10)
+        try:
+            await q.edit_message_text(
+                _maxpc_text(cur),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_maxpc_keyboard(cur),
+            )
+        except Exception: pass
+        return
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Areas
+# Price keyboard
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _areas_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
-    rows = []
-    for i in range(0, len(BERLIN_DISTRICTS), 2):
+def _price_text(cur: float) -> str:
+    lines = [
+        "💰 *أقصى إيجار شهري*",
+        _sep(),
+        "",
+        f"الحالي: *{cur:.0f} €*",
+        "",
+        "اضغط مبلغاً أو عدّل بـ ➕/➖:",
+    ]
+    return "\n".join(lines)
+
+
+def _price_keyboard(cur: float) -> InlineKeyboardMarkup:
+    prices = [300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 1000, 1200]
+    rows   = []
+    for i in range(0, len(prices), 5):
         row = []
-        for de, ar in BERLIN_DISTRICTS[i:i+2]:
-            on   = not selected or de in selected
-            tick = "✅" if on else "☐"
-            row.append(InlineKeyboardButton(
-                f"{tick} {ar}",
-                callback_data=f"area:toggle:{de}",
-            ))
+        for p in prices[i:i+5]:
+            label = f"✓{p}€" if int(cur) == p else f"{p}€"
+            row.append(InlineKeyboardButton(label, callback_data=f"price:set:{p}"))
         rows.append(row)
     rows.append([
-        InlineKeyboardButton("🌍 كل برلين",  callback_data="area:all"),
-        InlineKeyboardButton("💾 حفظ",        callback_data="area:save"),
+        InlineKeyboardButton("➕ 25",  callback_data="price:inc:25"),
+        InlineKeyboardButton("➕ 50",  callback_data="price:inc:50"),
+        InlineKeyboardButton("➕ 100", callback_data="price:inc:100"),
+        InlineKeyboardButton("➖ 25",  callback_data="price:dec:25"),
+        InlineKeyboardButton("➖ 50",  callback_data="price:dec:50"),
     ])
+    rows.append([InlineKeyboardButton("◀️ رجوع", callback_data="price:back")])
     return InlineKeyboardMarkup(rows)
-
-
-def _areas_text(selected: list[str]) -> str:
-    active_ar = [ar for de, ar in BERLIN_DISTRICTS if (not selected or de in selected)]
-    t = "📍 *اختيار المناطق*\n━━━━━━━━━━━━━━━━━━━━\n\n"
-    if not selected:
-        t += "🌍 كل برلين محدّدة\n"
-    else:
-        t += "محدّد: " + "، ".join(active_ar) + "\n"
-    t += "\n_اضغط منطقة لتفعيلها أو تعطيلها:_"
-    return t
-
-
-async def cmd_areas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_owner(update): return await _deny(update)
-    s        = await get_settings(str(update.effective_chat.id))
-    selected = _jl(s.get("areas"))
-    await update.message.reply_text(
-        _areas_text(selected),
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_areas_keyboard(selected),
-    )
-
-
-async def _edit_areas_menu(q, s: dict) -> None:
-    selected = _jl(s.get("areas"))
-    try:
-        await q.edit_message_text(
-            _areas_text(selected),
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_areas_keyboard(selected),
-        )
-    except Exception:
-        pass
-
-
-async def callback_area(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
-    await q.answer()
-    if str(q.from_user.id) != str(CHAT_ID): return
-    chat_id = str(q.message.chat_id)
-    action  = q.data.split(":", 2)
-    s        = await get_settings(chat_id)
-    selected = _jl(s.get("areas"))
-
-    if action[1] == "toggle":
-        de = action[2]
-        if de in selected:
-            selected.remove(de)
-        else:
-            selected.append(de)
-        if set(selected) == {d for d, _ in BERLIN_DISTRICTS}:
-            selected = []
-        await upsert_settings(chat_id, areas=json.dumps(selected, ensure_ascii=False))
-        s["areas"] = json.dumps(selected, ensure_ascii=False)
-        await _edit_areas_menu(q, s)
-
-    elif action[1] == "all":
-        selected = []
-        await upsert_settings(chat_id, areas="[]")
-        s["areas"] = "[]"
-        await _edit_areas_menu(q, s)
-
-    elif action[1] == "save":
-        lbl = f"{len(selected)} مناطق" if selected else "كل برلين"
-        await q.answer(f"✅ تم الحفظ — {lbl}", show_alert=True)
-        await q.delete_message()
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Price & Rooms
-# ═══════════════════════════════════════════════════════════════════════════════
-
-async def _show_price_menu(chat_id, context):
-    prices = [350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 900, 1000]
-    rows = []
-    for i in range(0, len(prices), 4):
-        rows.append([
-            InlineKeyboardButton(f"{p}€", callback_data=f"price:set:{p}")
-            for p in prices[i:i+4]
-        ])
-    rows.append([InlineKeyboardButton("✍️ أدخل رقماً: /set_price 550", callback_data="price:close")])
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="💰 *اختر أقصى إيجار شهري:*",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup(rows),
-    )
-
-
-async def _show_rooms_menu(chat_id, context):
-    opts = [("أي عدد", 0), ("1+", 1), ("1.5+", 1.5), ("2+", 2),
-            ("2.5+", 2.5), ("3+", 3), ("3.5+", 3.5), ("4+", 4)]
-    rows = []
-    for i in range(0, len(opts), 4):
-        rows.append([
-            InlineKeyboardButton(lbl, callback_data=f"rooms:set:{r}")
-            for lbl, r in opts[i:i+4]
-        ])
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="🛏 *اختر الحد الأدنى للغرف:*",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup(rows),
-    )
 
 
 async def cmd_set_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -590,10 +398,75 @@ async def cmd_set_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             p = float(context.args[0].replace(",", "."))
             await upsert_settings(str(update.effective_chat.id), max_price=p)
-            await update.message.reply_text(f"✅ أقصى إيجار: *{p:.0f} €*",
-                parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD); return
+            await update.message.reply_text(
+                f"✅ أقصى إيجار: *{p:.0f} €*",
+                parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
+            return
         except ValueError: pass
-    await _show_price_menu(update.effective_chat.id, context)
+    s   = await get_settings(str(update.effective_chat.id))
+    cur = float(s.get("max_price") or 600)
+    await update.message.reply_text(
+        _price_text(cur), parse_mode=ParseMode.MARKDOWN, reply_markup=_price_keyboard(cur))
+
+
+async def callback_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q       = update.callback_query
+    await q.answer()
+    if str(q.from_user.id) != str(CHAT_ID): return
+    chat_id = str(q.message.chat_id)
+    parts   = q.data.split(":", 2)
+    action  = parts[1]
+
+    if action == "back":
+        s = await get_settings(chat_id)
+        await _refresh_settings(q, s); return
+
+    s   = await get_settings(chat_id)
+    cur = float(s.get("max_price") or 600)
+
+    if action == "set":   cur = float(parts[2])
+    elif action == "inc": cur = min(cur + float(parts[2]), 5000)
+    elif action == "dec": cur = max(cur - float(parts[2]), 200)
+
+    await upsert_settings(chat_id, max_price=cur)
+    await q.answer(f"✅ {cur:.0f}€")
+    try:
+        await q.edit_message_text(
+            _price_text(cur), parse_mode=ParseMode.MARKDOWN, reply_markup=_price_keyboard(cur))
+    except Exception: pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Rooms keyboard
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _rooms_text(cur: float) -> str:
+    lbl = f"{cur:.0f}+ غرف" if cur else "أي عدد"
+    lines = [
+        "🛏 *الحد الأدنى للغرف*",
+        _sep(),
+        "",
+        f"الحالي: *{lbl}*",
+        "",
+        "اضغط للاختيار:",
+    ]
+    return "\n".join(lines)
+
+
+def _rooms_keyboard(cur: float) -> InlineKeyboardMarkup:
+    opts = [
+        ("أي عدد", 0), ("1", 1), ("1.5", 1.5),
+        ("2", 2), ("2.5", 2.5), ("3", 3), ("3.5", 3.5), ("4+", 4),
+    ]
+    rows = []
+    for i in range(0, len(opts), 4):
+        row = []
+        for lbl, r in opts[i:i+4]:
+            label = f"✓{lbl}" if r == cur else lbl
+            row.append(InlineKeyboardButton(label, callback_data=f"rooms:set:{r}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton("◀️ رجوع", callback_data="rooms:back")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def cmd_set_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -602,112 +475,310 @@ async def cmd_set_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         try:
             r = float(context.args[0].replace(",", "."))
             await upsert_settings(str(update.effective_chat.id), min_rooms=r)
-            lbl = f"≥{r:.0f}" if r else "أي عدد"
-            await update.message.reply_text(f"✅ الغرف: *{lbl}*",
-                parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD); return
+            lbl = f">={r:.0f}" if r else "أي عدد"
+            await update.message.reply_text(
+                f"✅ الغرف: *{lbl}*",
+                parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
+            return
         except ValueError: pass
-    await _show_rooms_menu(update.effective_chat.id, context)
-
-
-async def callback_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
-    await q.answer()
-    if str(q.from_user.id) != str(CHAT_ID): return
-    action = q.data.split(":", 2)
-    if action[1] == "close":
-        await q.delete_message(); return
-    p = float(action[2])
-    await upsert_settings(str(q.message.chat_id), max_price=p)
-    await q.edit_message_text(f"✅ *أقصى إيجار: {p:.0f} €*", parse_mode=ParseMode.MARKDOWN)
+    s   = await get_settings(str(update.effective_chat.id))
+    cur = float(s.get("min_rooms") or 0)
+    await update.message.reply_text(
+        _rooms_text(cur), parse_mode=ParseMode.MARKDOWN, reply_markup=_rooms_keyboard(cur))
 
 
 async def callback_rooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
+    q       = update.callback_query
     await q.answer()
     if str(q.from_user.id) != str(CHAT_ID): return
-    r = float(q.data.split(":", 2)[2])
-    await upsert_settings(str(q.message.chat_id), min_rooms=r)
-    lbl = f"≥{r:.0f}" if r else "أي عدد"
-    await q.edit_message_text(f"✅ *الغرف: {lbl}*", parse_mode=ParseMode.MARKDOWN)
+    chat_id = str(q.message.chat_id)
+    parts   = q.data.split(":", 2)
+
+    if parts[1] == "back":
+        s = await get_settings(chat_id)
+        await _refresh_settings(q, s); return
+
+    r = float(parts[2])
+    await upsert_settings(chat_id, min_rooms=r)
+    lbl = f"{r:.0f}+ غرف" if r else "أي عدد"
+    await q.answer(f"✅ {lbl}")
+    try:
+        await q.edit_message_text(
+            _rooms_text(r), parse_mode=ParseMode.MARKDOWN, reply_markup=_rooms_keyboard(r))
+    except Exception: pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Household & Social
+# Sources keyboard
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _sources_text(selected: list) -> str:
+    active = [SOURCE_META[s][0] for s in ALL_SOURCES if not selected or s in selected]
+    lines = [
+        "🌐 *اختيار المواقع*",
+        _sep(),
+        "",
+        f"مفعّل: {len(active)}/{len(ALL_SOURCES)}",
+        "",
+        "اضغط لتفعيل أو تعطيل:",
+    ]
+    return "\n".join(lines)
+
+
+def _sources_keyboard(selected: list) -> InlineKeyboardMarkup:
+    items = list(SOURCE_META.items())
+    rows  = []
+    for i in range(0, len(items), 2):
+        row = []
+        for src, (name, icon, is_gov) in items[i:i+2]:
+            on    = not selected or src in selected
+            tick  = "✅" if on else "☐"
+            row.append(InlineKeyboardButton(
+                f"{tick} {icon} {name}", callback_data=f"src:toggle:{src}"))
+        rows.append(row)
+    rows.append([
+        InlineKeyboardButton("✅ الكل",       callback_data="src:all"),
+        InlineKeyboardButton("🏛 حكومية فقط", callback_data="src:gov"),
+        InlineKeyboardButton("💾 حفظ",        callback_data="src:save"),
+    ])
+    rows.append([InlineKeyboardButton("◀️ رجوع", callback_data="src:back")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def cmd_sources(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update): return await _deny(update)
+    s   = await get_settings(str(update.effective_chat.id))
+    sel = _jl(s.get("sources"))
+    await update.message.reply_text(
+        _sources_text(sel), parse_mode=ParseMode.MARKDOWN, reply_markup=_sources_keyboard(sel))
+
+
+async def callback_src(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q       = update.callback_query
+    await q.answer()
+    if str(q.from_user.id) != str(CHAT_ID): return
+    chat_id = str(q.message.chat_id)
+    parts   = q.data.split(":", 2)
+    action  = parts[1]
+    s       = await get_settings(chat_id)
+    sel     = _jl(s.get("sources"))
+
+    if action == "back":
+        await _refresh_settings(q, s); return
+
+    if action == "toggle":
+        src = parts[2]
+        if src in sel: sel.remove(src)
+        else: sel.append(src)
+        if set(sel) == set(ALL_SOURCES): sel = []
+
+    elif action == "all":
+        sel = []
+    elif action == "gov":
+        sel = list(GOV_SOURCES)
+    elif action == "save":
+        lbl = f"{len(sel)}/{len(ALL_SOURCES)}" if sel else "الكل"
+        await q.answer(f"✅ {lbl} مواقع")
+        await upsert_settings(chat_id, sources=json.dumps(sel))
+        s = await get_settings(chat_id)
+        await _refresh_settings(q, s); return
+
+    await upsert_settings(chat_id, sources=json.dumps(sel))
+    s["sources"] = json.dumps(sel)
+    try:
+        await q.edit_message_text(
+            _sources_text(sel), parse_mode=ParseMode.MARKDOWN, reply_markup=_sources_keyboard(sel))
+    except Exception: pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Areas keyboard
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _areas_text(selected: list) -> str:
+    active = [de for de, _ in BERLIN_DISTRICTS if not selected or de in selected]
+    lines = [
+        "📍 *اختيار المناطق*",
+        _sep(),
+        "",
+        f"محدد: {len(active)}/{len(BERLIN_DISTRICTS)}",
+        "" if not selected else "المناطق: " + ", ".join(selected[:4]) + ("..." if len(selected) > 4 else ""),
+        "",
+        "اضغط منطقة لتفعيلها أو تعطيلها:",
+    ]
+    return "\n".join(lines)
+
+
+def _areas_keyboard(selected: list) -> InlineKeyboardMarkup:
+    rows = []
+    for i in range(0, len(BERLIN_DISTRICTS), 2):
+        row = []
+        for de, name in BERLIN_DISTRICTS[i:i+2]:
+            on    = not selected or de in selected
+            tick  = "✅" if on else "☐"
+            row.append(InlineKeyboardButton(
+                f"{tick} {name}", callback_data=f"area:toggle:{de}"))
+        rows.append(row)
+    rows.append([
+        InlineKeyboardButton("🌍 كل برلين", callback_data="area:all"),
+        InlineKeyboardButton("💾 حفظ",       callback_data="area:save"),
+    ])
+    rows.append([InlineKeyboardButton("◀️ رجوع", callback_data="area:back")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def cmd_areas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update): return await _deny(update)
+    s   = await get_settings(str(update.effective_chat.id))
+    sel = _jl(s.get("areas"))
+    await update.message.reply_text(
+        _areas_text(sel), parse_mode=ParseMode.MARKDOWN, reply_markup=_areas_keyboard(sel))
+
+
+async def callback_area(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q       = update.callback_query
+    await q.answer()
+    if str(q.from_user.id) != str(CHAT_ID): return
+    chat_id = str(q.message.chat_id)
+    parts   = q.data.split(":", 2)
+    action  = parts[1]
+    s       = await get_settings(chat_id)
+    sel     = _jl(s.get("areas"))
+
+    if action == "back":
+        await _refresh_settings(q, s); return
+
+    if action == "toggle":
+        de = parts[2]
+        if de in sel: sel.remove(de)
+        else: sel.append(de)
+        if set(sel) == {d for d, _ in BERLIN_DISTRICTS}: sel = []
+    elif action == "all":
+        sel = []
+    elif action == "save":
+        lbl = f"{len(sel)} مناطق" if sel else "كل برلين"
+        await q.answer(f"✅ {lbl}")
+        await upsert_settings(chat_id, areas=json.dumps(sel, ensure_ascii=False))
+        s = await get_settings(chat_id)
+        await _refresh_settings(q, s); return
+
+    await upsert_settings(chat_id, areas=json.dumps(sel, ensure_ascii=False))
+    try:
+        await q.edit_message_text(
+            _areas_text(sel), parse_mode=ParseMode.MARKDOWN, reply_markup=_areas_keyboard(sel))
+    except Exception: pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Household keyboard
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _household_text(cur: int) -> str:
+    reqs = get_full_requirements(cur)
+    unit = "فرد" if cur == 1 else "أفراد"
+    lines = [
+        "👥 *عدد أفراد الأسرة*",
+        _sep(),
+        "",
+        f"الحالي: *{cur} {unit}*",
+        "",
+        f"🏛 Jobcenter: {reqs['jc_price']:.0f}€ / {reqs['jc_size_max']}m2 / {reqs['jc_rooms_min']:.0f}غرف",
+        f"🏦 Wohngeld:  {reqs['wg_price']:.0f}€ / {reqs['wg_rooms_min']:.0f}غرف",
+        "",
+        "اضغط لتغيير:",
+    ]
+    return "\n".join(lines)
+
+
+def _household_keyboard(cur: int, from_social: bool = False) -> InlineKeyboardMarkup:
+    labels = ["1 فرد", "2 فرد", "3 أفراد", "4 أفراد", "5 أفراد", "6+ أفراد"]
+    rows = [
+        [InlineKeyboardButton(
+            f"{'✓ ' if i == cur else ''}{labels[i-1]}",
+            callback_data=f"hh:set:{i}") for i in range(1, 4)],
+        [InlineKeyboardButton(
+            f"{'✓ ' if i == cur else ''}{labels[i-1]}",
+            callback_data=f"hh:set:{i}") for i in range(4, 7)],
+    ]
+    back = "hh:back:soc" if from_social else "hh:back:cfg"
+    rows.append([InlineKeyboardButton("◀️ رجوع", callback_data=back)])
+    return InlineKeyboardMarkup(rows)
+
 
 async def cmd_household(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
     if context.args:
         try:
-            n = int(context.args[0])
-            assert 1 <= n <= 10
+            n = max(1, min(10, int(context.args[0])))
             await upsert_settings(str(update.effective_chat.id), household_size=n)
-            reqs = get_full_requirements(n)
             await update.message.reply_text(
-                f"✅ *عدد الأفراد: {n}*\n\n"
-                f"🏛 JC: {reqs['jc_price']:.0f}€ / {reqs['jc_size_max']}م²\n"
-                f"🏦 WG: {reqs['wg_price']:.0f}€",
-                parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD); return
+                f"✅ *{n} {'فرد' if n==1 else 'أفراد'}*",
+                parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
+            return
         except (ValueError, AssertionError): pass
-    await _edit_household_menu_msg(update.message)
-
-
-async def _edit_household_menu_msg(msg):
-    labels = ["1 فرد","2 فرد","3 أفراد","4 أفراد","5 أفراد","6+ أفراد"]
-    rows = [
-        [InlineKeyboardButton(labels[i-1], callback_data=f"hh:set:{i}") for i in range(1,4)],
-        [InlineKeyboardButton(labels[i-1], callback_data=f"hh:set:{i}") for i in range(4,7)],
-    ]
-    await msg.reply_text("👨‍👩‍👧 *عدد أفراد الأسرة:*",
-        parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
-
-
-async def _edit_household_menu(q):
-    labels = ["1 فرد","2 فرد","3 أفراد","4 أفراد","5 أفراد","6+ أفراد"]
-    rows = [
-        [InlineKeyboardButton(labels[i-1], callback_data=f"hh:set:{i}") for i in range(1,4)],
-        [InlineKeyboardButton(labels[i-1], callback_data=f"hh:set:{i}") for i in range(4,7)],
-    ]
-    try:
-        await q.edit_message_text("👨‍👩‍👧 *عدد أفراد الأسرة:*",
-            parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
-    except Exception: pass
+    s   = await get_settings(str(update.effective_chat.id))
+    cur = int(s.get("household_size") or 1)
+    await update.message.reply_text(
+        _household_text(cur), parse_mode=ParseMode.MARKDOWN, reply_markup=_household_keyboard(cur))
 
 
 async def callback_household(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
+    q       = update.callback_query
     await q.answer()
     if str(q.from_user.id) != str(CHAT_ID): return
-    n = int(q.data.split(":", 2)[2])
-    await upsert_settings(str(q.message.chat_id), household_size=n)
-    reqs = get_full_requirements(n)
-    await q.edit_message_text(
-        f"✅ *{n} {'فرد' if n==1 else 'أفراد'}*\n\n"
-        f"🏛 Jobcenter: {reqs['jc_price']:.0f}€ · {reqs['jc_size_max']}م² · {reqs['jc_rooms_min']:.0f} غرف\n"
-        f"🏦 Wohngeld:  {reqs['wg_price']:.0f}€ · {reqs['wg_rooms_min']:.0f} غرف\n\n"
-        "_/social لتفعيل الفلاتر_",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    chat_id = str(q.message.chat_id)
+    parts   = q.data.split(":", 2)
+    action  = parts[1]
+    s       = await get_settings(chat_id)
 
+    if action == "back":
+        dest = parts[2] if len(parts) > 2 else "cfg"
+        if dest == "soc":
+            try:
+                await q.edit_message_text(
+                    _social_text(s), parse_mode=ParseMode.MARKDOWN, reply_markup=_social_keyboard(s))
+            except Exception: pass
+        else:
+            await _refresh_settings(q, s)
+        return
+
+    n = int(parts[2])
+    await upsert_settings(chat_id, household_size=n)
+    await q.answer(f"✅ {n} {'فرد' if n==1 else 'أفراد'}")
+    try:
+        await q.edit_message_text(
+            _household_text(n), parse_mode=ParseMode.MARKDOWN, reply_markup=_household_keyboard(n))
+    except Exception: pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Social filter keyboard
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _social_text(s: dict) -> str:
     n    = int(s.get("household_size") or 1)
     jc   = bool(s.get("jobcenter_mode"))
     wg   = bool(s.get("wohngeld_mode"))
     reqs = get_full_requirements(n)
-    return (
-        "🏛 *فلاتر Jobcenter / Wohngeld*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👨‍👩‍👧 الأسرة: *{n} {'فرد' if n==1 else 'أفراد'}*\n\n"
-        f"🏛 *Jobcenter KdU* {'✅ مفعّل' if jc else '❌ معطّل'}\n"
-        f"   ✔ إيجار ≤ {reqs['jc_price']:.0f} €\n"
-        f"   ✔ مساحة ≤ {reqs['jc_size_max']} م²\n"
-        f"   ✔ غرف ≥ {reqs['jc_rooms_min']:.0f}\n\n"
-        f"🏦 *Wohngeld* {'✅ مفعّل' if wg else '❌ معطّل'}\n"
-        f"   ✔ إيجار ≤ {reqs['wg_price']:.0f} €\n"
-        f"   ✔ غرف ≥ {reqs['wg_rooms_min']:.0f}\n\n"
-        "_يجب استيفاء جميع الشروط لكل فلتر_"
-    )
+    unit = "فرد" if n == 1 else "أفراد"
+    lines = [
+        "🏛 *فلاتر Jobcenter / Wohngeld*",
+        _sep(),
+        "",
+        f"👥 الأسرة: *{n} {unit}*",
+        "",
+        f"🏛 *Jobcenter KdU* {'✅ مفعّل' if jc else '❌ معطّل'}",
+        f"   ✔ إيجار <= {reqs['jc_price']:.0f} €",
+        f"   ✔ مساحة <= {reqs['jc_size_max']} m2",
+        f"   ✔ غرف >= {reqs['jc_rooms_min']:.0f}",
+        "",
+        f"🏦 *Wohngeld* {'✅ مفعّل' if wg else '❌ معطّل'}",
+        f"   ✔ إيجار <= {reqs['wg_price']:.0f} €",
+        f"   ✔ غرف >= {reqs['wg_rooms_min']:.0f}",
+        "",
+        "_يجب استيفاء جميع الشروط_",
+    ]
+    return "\n".join(lines)
 
 
 def _social_keyboard(s: dict) -> InlineKeyboardMarkup:
@@ -716,50 +787,51 @@ def _social_keyboard(s: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{'✅' if jc else '❌'} Jobcenter KdU", callback_data="soc:jc")],
         [InlineKeyboardButton(f"{'✅' if wg else '❌'} Wohngeld",      callback_data="soc:wg")],
-        [InlineKeyboardButton("👨‍👩‍👧 تغيير عدد الأفراد", callback_data="soc:hh")],
-        [InlineKeyboardButton("💾 حفظ وإغلاق",         callback_data="soc:done")],
+        [InlineKeyboardButton("👥 تغيير عدد الأفراد",                  callback_data="soc:hh")],
+        [InlineKeyboardButton("◀️ رجوع",                               callback_data="soc:back")],
     ])
 
 
 async def cmd_social(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
     s = await get_settings(str(update.effective_chat.id))
-    await update.message.reply_text(_social_text(s), parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_social_keyboard(s))
-
-
-async def _edit_social_menu(q, s: dict) -> None:
-    try:
-        await q.edit_message_text(_social_text(s), parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_social_keyboard(s))
-    except Exception: pass
+    await update.message.reply_text(
+        _social_text(s), parse_mode=ParseMode.MARKDOWN, reply_markup=_social_keyboard(s))
 
 
 async def callback_social(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
+    q       = update.callback_query
     await q.answer()
     if str(q.from_user.id) != str(CHAT_ID): return
     chat_id = str(q.message.chat_id)
     action  = q.data.split(":", 1)[1]
     s       = await get_settings(chat_id)
 
+    if action == "back":
+        await _refresh_settings(q, s); return
+
     if action == "jc":
         new = 0 if s.get("jobcenter_mode") else 1
         await upsert_settings(chat_id, jobcenter_mode=new)
         s["jobcenter_mode"] = new
-        await _edit_social_menu(q, s)
     elif action == "wg":
         new = 0 if s.get("wohngeld_mode") else 1
         await upsert_settings(chat_id, wohngeld_mode=new)
         s["wohngeld_mode"] = new
-        await _edit_social_menu(q, s)
     elif action == "hh":
-        await _edit_household_menu(q)
-    elif action == "done":
-        jc = "✅" if s.get("jobcenter_mode") else "❌"
-        wg = "✅" if s.get("wohngeld_mode")  else "❌"
-        await q.edit_message_text(f"✅ *تم الحفظ*\n\n🏛 Jobcenter: {jc}\n🏦 Wohngeld: {wg}",
-            parse_mode=ParseMode.MARKDOWN)
+        cur = int(s.get("household_size") or 1)
+        try:
+            await q.edit_message_text(
+                _household_text(cur),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_household_keyboard(cur, from_social=True))
+        except Exception: pass
+        return
+
+    try:
+        await q.edit_message_text(
+            _social_text(s), parse_mode=ParseMode.MARKDOWN, reply_markup=_social_keyboard(s))
+    except Exception: pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -770,179 +842,192 @@ def _schedule_text(s: dict) -> str:
     qs = int(s.get("quiet_start", -1))
     qe = int(s.get("quiet_end",   -1))
     if qs < 0:
-        status = "🔔 لا ساعات هدوء — الإشعارات دائماً مفعّلة"
+        status = "🔔 لا ساعات هدوء — الإشعارات دائمة"
     else:
         status = f"🌙 هدوء من {qs:02d}:00 حتى {qe:02d}:00"
-    return (
-        "🌙 *ساعات الهدوء*\n━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{status}\n\n"
-        "_خلال ساعات الهدوء تُحفظ الإشعارات ولا تُرسل_\n"
-        "_اضغط البداية ثم النهاية:_"
-    )
+    lines = [
+        "🌙 *ساعات الهدوء*",
+        _sep(),
+        "",
+        status,
+        "",
+        "_خلال الهدوء: تُحفظ الإشعارات ولا تُرسل_",
+    ]
+    return "\n".join(lines)
 
 
-def _schedule_keyboard(s: dict) -> InlineKeyboardMarkup:
-    qs = int(s.get("quiet_start", -1))
-    qe = int(s.get("quiet_end",   -1))
-    phase = s.get("_schedule_phase", "start")
+def _schedule_keyboard(s: dict, phase: str = "start") -> InlineKeyboardMarkup:
     hours = [22, 23, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-    rows = []
+    rows  = []
     for i in range(0, len(hours), 4):
         rows.append([
             InlineKeyboardButton(f"{h:02d}:00", callback_data=f"sch:{phase}:{h}")
             for h in hours[i:i+4]
         ])
-    rows.append([
-        InlineKeyboardButton("🚫 إلغاء ساعات الهدوء", callback_data="sch:clear:0"),
-    ])
-    rows.append([InlineKeyboardButton("❌ إغلاق", callback_data="sch:close:0")])
+    rows.append([InlineKeyboardButton("🚫 إلغاء ساعات الهدوء", callback_data="sch:clear:0")])
+    rows.append([InlineKeyboardButton("◀️ رجوع", callback_data="sch:back:0")])
     return InlineKeyboardMarkup(rows)
 
 
 async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
     s = await get_settings(str(update.effective_chat.id))
-    s["_schedule_phase"] = "start"
     await update.message.reply_text(
         _schedule_text(s) + "\n\n*اختر ساعة البداية:*",
-        parse_mode=ParseMode.MARKDOWN, reply_markup=_schedule_keyboard(s))
-
-
-async def _edit_schedule_menu(q, s: dict) -> None:
-    s["_schedule_phase"] = "start"
-    try:
-        await q.edit_message_text(
-            _schedule_text(s) + "\n\n*اختر ساعة البداية:*",
-            parse_mode=ParseMode.MARKDOWN, reply_markup=_schedule_keyboard(s))
-    except Exception: pass
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_schedule_keyboard(s, phase="start"))
 
 
 async def callback_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
+    q       = update.callback_query
     await q.answer()
     if str(q.from_user.id) != str(CHAT_ID): return
     chat_id = str(q.message.chat_id)
-    _, action, val = q.data.split(":", 2)
-    h = int(val)
-    s = await get_settings(chat_id)
+    parts   = q.data.split(":", 2)
+    action  = parts[1]
+    val     = int(parts[2])
+    s       = await get_settings(chat_id)
 
-    if action == "close":
-        await q.delete_message(); return
+    if action == "back":
+        await _refresh_settings(q, s); return
+
     if action == "clear":
         await upsert_settings(chat_id, quiet_start=-1, quiet_end=-1)
         s["quiet_start"] = -1; s["quiet_end"] = -1
-        await q.edit_message_text("✅ *ساعات الهدوء مُلغاة*\nالإشعارات مفعّلة دائماً.",
-            parse_mode=ParseMode.MARKDOWN); return
+        await q.answer("✅ مُلغاة")
+        await _refresh_settings(q, s); return
+
     if action == "start":
-        s["_qs_pending"] = h
-        s["_schedule_phase"] = "end"
-        await q.edit_message_text(
-            f"ساعة البداية: *{h:02d}:00*\n\n*اختر ساعة النهاية:*",
-            parse_mode=ParseMode.MARKDOWN, reply_markup=_schedule_keyboard(s)); return
+        context.user_data["qs_pending"] = val
+        try:
+            await q.edit_message_text(
+                f"البداية: *{val:02d}:00*\n\n*اختر ساعة النهاية:*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_schedule_keyboard(s, phase="end"))
+        except Exception: pass
+        return
+
     if action == "end":
-        qs = s.get("_qs_pending", 22)
-        await upsert_settings(chat_id, quiet_start=qs, quiet_end=h)
-        await q.edit_message_text(
-            f"✅ *ساعات الهدوء: {qs:02d}:00 — {h:02d}:00*\n\nلن تُرسل إشعارات خلال هذا الوقت.",
-            parse_mode=ParseMode.MARKDOWN); return
+        qs = context.user_data.pop("qs_pending", 22)
+        await upsert_settings(chat_id, quiet_start=qs, quiet_end=val)
+        await q.answer(f"✅ {qs:02d}:00–{val:02d}:00")
+        s = await get_settings(chat_id)
+        await _refresh_settings(q, s); return
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Max per cycle
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def _edit_maxpc_menu(q, s: dict) -> None:
+def _maxpc_text(cur: int) -> str:
+    lines = [
+        "📬 *حد الإشعارات لكل دورة*",
+        _sep(),
+        "",
+        f"الحالي: *{cur}* إشعار/دورة",
+        "",
+        "_يمنع إغراق المحادثة بعشرات الإشعارات_",
+        "",
+        "اضغط للاختيار:",
+    ]
+    return "\n".join(lines)
+
+
+def _maxpc_keyboard(cur: int) -> InlineKeyboardMarkup:
     opts = [1, 3, 5, 10, 15, 20, 30, 50]
     rows = []
     for i in range(0, len(opts), 4):
         rows.append([
-            InlineKeyboardButton(f"{v}", callback_data=f"mpc:set:{v}")
+            InlineKeyboardButton(f"{'✓' if v == cur else ''}{v}", callback_data=f"mpc:set:{v}")
             for v in opts[i:i+4]
         ])
-    current = int(s.get("max_per_cycle", 10))
-    try:
-        await q.edit_message_text(
-            f"📬 *حد الإشعارات لكل دورة* (الحالي: {current})\n\n"
-            "_منع إغراق المحادثة بعشرات الإشعارات دفعة واحدة_",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(rows))
-    except Exception: pass
+    rows.append([InlineKeyboardButton("◀️ رجوع", callback_data="mpc:back")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def callback_mpc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    q = update.callback_query
+    q       = update.callback_query
     await q.answer()
     if str(q.from_user.id) != str(CHAT_ID): return
-    v = int(q.data.split(":", 2)[2])
-    await upsert_settings(str(q.message.chat_id), max_per_cycle=v)
-    await q.edit_message_text(f"✅ *حد الإشعارات: {v} لكل دورة*", parse_mode=ParseMode.MARKDOWN)
+    chat_id = str(q.message.chat_id)
+    parts   = q.data.split(":", 2)
+
+    if parts[1] == "back":
+        s = await get_settings(chat_id)
+        await _refresh_settings(q, s); return
+
+    v = int(parts[2])
+    await upsert_settings(chat_id, max_per_cycle=v)
+    await q.answer(f"✅ {v}/دورة")
+    s = await get_settings(chat_id)
+    await _refresh_settings(q, s)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /status  /stats  /on  /off  /wbs_on  /wbs_off
+# /status  /stats  /on  /off  /wbs  /last  /check  /ping  /uptime  /reset
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
-    s        = await get_settings(str(update.effective_chat.id))
-    active   = "🟢 يعمل" if s.get("active", 1) else "🔴 موقوف"
-    wbs      = "✅ WBS فقط" if s.get("wbs_only") else "🔓 كل الشقق"
-    price    = s.get("max_price", 600)
-    rooms    = s.get("min_rooms") or 0
-    rooms_s  = f"≥{rooms:.0f}" if rooms else "أي عدد"
-    n        = int(s.get("household_size") or 1)
-    sources  = _jl(s.get("sources"))
-    areas    = _jl(s.get("areas"))
-    qs       = int(s.get("quiet_start", -1))
-    qe       = int(s.get("quiet_end",   -1))
-    mpc      = int(s.get("max_per_cycle", 10))
-    jc_on    = bool(s.get("jobcenter_mode"))
-    wg_on    = bool(s.get("wohngeld_mode"))
-    reqs     = get_full_requirements(n)
+    s       = await get_settings(str(update.effective_chat.id))
+    active  = "🟢 يعمل" if s.get("active", 1) else "🔴 موقوف"
+    wbs     = "✅ WBS فقط" if s.get("wbs_only") else "🔓 كل الشقق"
+    price   = float(s.get("max_price") or 600)
+    rooms   = float(s.get("min_rooms") or 0)
+    n       = int(s.get("household_size") or 1)
+    sources = _jl(s.get("sources"))
+    areas   = _jl(s.get("areas"))
+    qs      = int(s.get("quiet_start", -1))
+    qe      = int(s.get("quiet_end",   -1))
+    mpc     = int(s.get("max_per_cycle") or 10)
+    jc_on   = bool(s.get("jobcenter_mode"))
+    wg_on   = bool(s.get("wohngeld_mode"))
+    reqs    = get_full_requirements(n)
 
-    src_list = [SOURCE_META[s_][0] for s_ in ALL_SOURCES if not sources or s_ in sources]
-    src_str  = " · ".join(src_list)
-    area_str = "كل برلين 🌍" if not areas else "، ".join(areas)
-    qs_str   = f"🌙 {qs:02d}:00–{qe:02d}:00" if qs >= 0 else "—"
+    src_str  = ", ".join(SOURCE_META[s_][0] for s_ in ALL_SOURCES if not sources or s_ in sources)
+    area_str = "كل برلين" if not areas else ", ".join(areas[:3]) + ("..." if len(areas) > 3 else "")
+    rooms_s  = f">={rooms:.0f}" if rooms else "أي"
+    qs_str   = f"{qs:02d}:00-{qe:02d}:00" if qs >= 0 else "—"
+    jc_str   = f"✅ <={reqs['jc_price']:.0f}€ /{reqs['jc_size_max']}m2 /{reqs['jc_rooms_min']:.0f}غرف" if jc_on else "❌"
+    wg_str   = f"✅ <={reqs['wg_price']:.0f}€ /{reqs['wg_rooms_min']:.0f}غرف" if wg_on else "❌"
 
-    jc_str = (f"✅ ≤{reqs['jc_price']:.0f}€ / {reqs['jc_size_max']}م² / {reqs['jc_rooms_min']:.0f}غرف"
-              if jc_on else "❌ معطّل")
-    wg_str = (f"✅ ≤{reqs['wg_price']:.0f}€ / {reqs['wg_rooms_min']:.0f}غرف"
-              if wg_on else "❌ معطّل")
-
-    await update.message.reply_text(
-        "📊 *الإعدادات الكاملة*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔔 الإشعارات:   {active}\n"
-        f"🏠 وضع البحث:   {wbs}\n"
-        f"💰 أقصى إيجار: {price:.0f} €\n"
-        f"🛏 الغرف:       {rooms_s}\n"
-        f"📍 المناطق:     {area_str}\n"
-        f"🌐 المواقع:     {src_str}\n"
-        f"👨‍👩‍👧 الأسرة:      {n} {'فرد' if n==1 else 'أفراد'}\n"
-        f"🏛 Jobcenter:  {jc_str}\n"
-        f"🏦 Wohngeld:   {wg_str}\n"
-        f"📬 حد/دورة:    {mpc}\n"
-        f"🌙 هدوء:       {qs_str}\n\n"
+    lines = [
+        "📊 *الإعدادات الكاملة*",
+        _sep(),
+        "",
+        f"🔔 الإشعارات:  {active}",
+        f"🏠 الوضع:      {wbs}",
+        f"💰 الإيجار:    <={price:.0f} €",
+        f"🛏 الغرف:      {rooms_s}",
+        f"📍 المناطق:    {area_str}",
+        f"🌐 المواقع:    {src_str}",
+        f"👥 الأسرة:     {n} {'فرد' if n==1 else 'أفراد'}",
+        f"🏛 Jobcenter: {jc_str}",
+        f"🏦 Wohngeld:  {wg_str}",
+        f"📬 حد/دورة:   {mpc}",
+        f"🌙 هدوء:      {qs_str}",
+        "",
         "_/settings لتعديل الإعدادات_",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=MAIN_KEYBOARD,
-    )
+    ]
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
 
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
     st = await get_stats()
-    await update.message.reply_text(
-        "📈 *إحصائيات البوت*\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📨 إشعارات مُرسلة:  {st.get('total_sent', 0)}\n"
-        f"🔄 دورات كشط:      {st.get('total_cycles', 0)}\n"
-        f"🗃 إعلانات محفوظة: {st.get('db_size', 0)}\n"
+    lines = [
+        "📈 *إحصائيات البوت*",
+        _sep(),
+        "",
+        f"📨 إشعارات مُرسلة:  {st.get('total_sent', 0)}",
+        f"🔄 دورات كشط:      {st.get('total_cycles', 0)}",
+        f"🗃 إعلانات محفوظة: {st.get('db_size', 0)}",
         f"🕐 آخر إشعار:      {_time_ago(st.get('last_sent_at'))}",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=MAIN_KEYBOARD,
-    )
+    ]
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
+
 
 async def cmd_on(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
@@ -965,10 +1050,6 @@ async def cmd_wbs_off(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text("🔓 *كل الشقق*", parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /last  /check
-# ═══════════════════════════════════════════════════════════════════════════════
-
 async def cmd_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
     n = 5
@@ -977,17 +1058,17 @@ async def cmd_last(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except ValueError: pass
     rows = await get_recent_listings(n)
     if not rows:
-        await update.message.reply_text("📭 لا توجد إعلانات محفوظة.", reply_markup=MAIN_KEYBOARD); return
-    lines = [f"🕐 *آخر {n} إعلانات*\n━━━━━━━━━━━━━━━━━━━━\n"]
+        await update.message.reply_text("📭 لا توجد إعلانات.", reply_markup=MAIN_KEYBOARD); return
+    lines = [f"🕐 *آخر {n} إعلانات*", _sep(), ""]
     for i, r in enumerate(rows, 1):
         price = f"{r['price']:.0f} €" if r.get("price") else "—"
         src   = SOURCE_META.get(r.get("source", ""), (r.get("source",""), "🔍", False))[0]
         title = (r.get("title") or "شقة").strip()[:40]
-        ago   = _time_ago(r.get("created_at"))
         url   = r.get("url","")
-        lines.append(f"*{i}.* [{title}]({url})\n   💰 {price} · {src} · {ago}\n")
-    await update.message.reply_text("\n".join(lines),
-        parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True, reply_markup=MAIN_KEYBOARD)
+        lines.append(f"*{i}.* [{title}]({url})\n   {price} · {src} · {_time_ago(r.get('created_at'))}\n")
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.MARKDOWN,
+        disable_web_page_preview=True, reply_markup=MAIN_KEYBOARD)
 
 
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -995,54 +1076,53 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("🔍 جاري الفحص…", reply_markup=MAIN_KEYBOARD)
     from scrapers.circuit_breaker import all_statuses
     hmap   = {r["source"]: r for r in await get_all_health()}
-    cb_map = {s["name"]: s for s in all_statuses()}
-    lines  = ["📊 *حالة المصادر*\n━━━━━━━━━━━━━━━━━━━━\n"]
-    ok = err = 0
+    cb_map = {s_["name"]: s_ for s_ in all_statuses()}
+    lines  = ["📊 *حالة المصادر*", _sep(), ""]
+    ok = 0
     for src in ALL_SOURCES:
         name, icon, _ = SOURCE_META[src]
         row      = hmap.get(src)
         cb       = cb_map.get(src, {})
-        cb_state = {"CLOSED":"🟢","HALF":"🟡","OPEN":"🔴"}.get(cb.get("state","CLOSED"),"⚪")
+        cb_icon  = {"CLOSED": "🟢", "HALF": "🟡", "OPEN": "🔴"}.get(cb.get("state", "CLOSED"), "⚪")
         if not row:
-            lines.append(f"⚪ {icon} *{name}* — لم يعمل بعد {cb_state}")
+            lines.append(f"⚪ {icon} *{name}* — لم يعمل {cb_icon}")
         elif row.get("status") == "ok":
             ok += 1
-            lines.append(f"✅ {icon} *{name}*  `{row.get('listings_found',0)}` · {_time_ago(row.get('last_run'))} {cb_state}")
+            lines.append(f"✅ {icon} *{name}* {row.get('listings_found',0)} · {_time_ago(row.get('last_run'))} {cb_icon}")
         else:
-            err += 1
-            lines.append(f"❌ {icon} *{name}*  `{str(row.get('last_error',''))[:40]}` {cb_state}")
-    lines.append(f"\n📈 *{ok}/{len(ALL_SOURCES)}* يعمل · 🟢طبيعي 🟡اختبار 🔴مغلق")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
+            lines.append(f"❌ {icon} *{name}* `{str(row.get('last_error',''))[:35]}` {cb_icon}")
+    lines.append(f"\n📈 *{ok}/{len(ALL_SOURCES)}* يعمل")
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# /ping  /uptime  /reset
-# ═══════════════════════════════════════════════════════════════════════════════
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
     import time
     t0  = time.monotonic()
-    msg = await update.message.reply_text("🏓 …")
+    msg = await update.message.reply_text("🏓 ...")
     lat = (time.monotonic() - t0) * 1000
     from scheduler.runner import _cycle
-    await msg.edit_text(f"🏓 *Pong\\!*\n⚡ `{lat:.0f}ms`\n🔄 دورة `#{_cycle}`",
+    await msg.edit_text(
+        f"🏓 Pong!\n⚡ `{lat:.0f}ms`\n🔄 دورة `#{_cycle}`",
         parse_mode=ParseMode.MARKDOWN)
 
 
 async def cmd_uptime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
-    elapsed   = _time.monotonic() - _BOT_START
-    h, rem    = divmod(int(elapsed), 3600)
-    m, s      = divmod(rem, 60)
-    started   = _BOT_START_DT.strftime("%Y-%m-%d %H:%M UTC")
-    st        = await get_stats()
-    await update.message.reply_text(
-        f"⏱ *{h}س {m}د {s}ث*\n"
-        f"🕐 بدأ: `{started}`\n"
-        f"🔄 دورات: `{st.get('total_cycles',0)}`\n"
+    elapsed = _time.monotonic() - _BOT_START
+    h, rem  = divmod(int(elapsed), 3600)
+    m, sec  = divmod(rem, 60)
+    started = _BOT_START_DT.strftime("%Y-%m-%d %H:%M UTC")
+    st      = await get_stats()
+    lines = [
+        f"⏱ *{h}س {m}د {sec}ث*",
+        f"🕐 بدأ: `{started}`",
+        f"🔄 دورات: `{st.get('total_cycles',0)}`",
         f"📨 مُرسل: `{st.get('total_sent',0)}`",
-        parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
+    ]
+    await update.message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
 
 
 async def _do_reset(chat_id: str) -> None:
@@ -1058,7 +1138,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update): return await _deny(update)
     await _do_reset(str(update.effective_chat.id))
     await update.message.reply_text(
-        "🔄 *تم إعادة جميع الإعدادات للافتراضي*",
+        "🔄 *تم إعادة الإعدادات للافتراضي*",
         parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_KEYBOARD)
 
 
@@ -1068,14 +1148,14 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     mapping = {
-        "📊 الحالة":       cmd_status,
-        "📈 الإحصائيات":   cmd_stats,
-        "⚙️ إعدادات":     cmd_settings,
-        "🔍 المصادر":      cmd_sources,
-        "✅ WBS فقط":      cmd_wbs_on,
-        "🔓 كل الشقق":     cmd_wbs_off,
-        "🟢 تشغيل":        cmd_on,
-        "🔴 إيقاف":        cmd_off,
+        "📊 الحالة":     cmd_status,
+        "📈 الإحصائيات": cmd_stats,
+        "⚙️ إعدادات":   cmd_settings,
+        "🔍 المصادر":    cmd_sources,
+        "✅ WBS فقط":    cmd_wbs_on,
+        "🔓 كل الشقق":   cmd_wbs_off,
+        "🟢 تشغيل":      cmd_on,
+        "🔴 إيقاف":      cmd_off,
     }
     fn = mapping.get(update.message.text)
     if fn:
@@ -1086,55 +1166,46 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # Notification formatter
 # ═══════════════════════════════════════════════════════════════════════════════
 
-FEATURE_ICONS = {
-    "بلكونة":"🌿","تراس":"🌿","حديقة":"🌱","مصعد":"🛗",
-    "مطبخ مجهز":"🍳","مخزن":"📦","موقف سيارة":"🚗",
-    "بدون عوائق":"♿","بناء جديد":"🏗","أول سكن":"✨",
-    "غسالة":"🫧","حمام إضافي":"🚿",
-}
-
-def _clean(t: str, maxlen: int = 70) -> str:
+def _clean(t, maxlen: int = 70) -> str:
     import re
-    t = re.sub(r'\s+', ' ', str(t or ""))
-    t = re.sub(r'\s*\|\s*', ', ', t)
-    t = re.sub(r',\s*,+', ',', t)
-    return t.strip(' ,|•–-/')[:maxlen].strip()
+    t = re.sub(r"\s+", " ", str(t or ""))
+    t = re.sub(r"\s*\|\s*", ", ", t)
+    t = re.sub(r",\s*,+", ",", t)
+    return t.strip(" ,|•–-/")[:maxlen].strip()
 
 
-def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
+def format_listing(listing: dict) -> tuple:
     src      = listing.get("source", "")
-    name, icon, _ = SOURCE_META.get(src, (src.title(), "🔍", False))
-    src_type = "🏛 حكومية" if src in GOV_SOURCES else "🔍 خاصة"
+    name, icon, is_gov = SOURCE_META.get(src, (src.title(), "🔍", False))
+    src_type = "🏛 حكومية" if is_gov else "🔍 خاصة"
 
     price = listing.get("price")
     p_str = f"{price:,.0f} €".replace(",", ".") if isinstance(price, (int, float)) else None
     ppm2  = listing.get("price_per_m2")
     if p_str and ppm2:
-        p_str += f"  *(≈ {ppm2} €/م²)*"
+        p_str += f"  (~{ppm2} €/m2)"
 
     rooms = listing.get("rooms")
     r_str = (str(int(rooms)) if rooms == int(rooms) else str(rooms)) if rooms else None
-
     size  = listing.get("size_m2")
-    s_str = f"{size:.0f} م²" if size else None
-
+    s_str = f"{size:.0f} m2" if size else None
     loc   = _clean(listing.get("district") or listing.get("location") or "Berlin")
 
-    wbs_level  = listing.get("wbs_level")
-    wbs_line   = f"📋 WBS:  ✅ مطلوب {wbs_level}" if wbs_level else "📋 WBS:  ❌ غير مطلوب"
-    soc_badge  = listing.get("social_badge", "")
+    wbs_level = listing.get("wbs_level")
+    wbs_line  = f"📋 WBS: ✅ {wbs_level}" if wbs_level else "📋 WBS: ❌ غير مطلوب"
+    soc_badge = listing.get("social_badge", "")
 
-    lines = [f"🏢 *{name}* — {src_type}\n"]
-    if loc:                       lines.append(f"📍 الموقع:   {loc}")
-    if p_str:                     lines.append(f"💰 الإيجار:  {p_str}")
-    if r_str:                     lines.append(f"🛏 الغرف:    {r_str}")
-    if s_str:                     lines.append(f"📐 المساحة:  {s_str}")
-    if listing.get("floor"):      lines.append(f"🏢 الطابق:   {listing['floor']}")
-    if listing.get("available_from"): lines.append(f"📅 الإتاحة:  {listing['available_from']}")
-    lines.append(wbs_line)
-    if soc_badge:                 lines.append(soc_badge)
+    parts = [f"🏢 *{name}* — {src_type}\n"]
+    if loc:                       parts.append(f"📍 الموقع:  {loc}")
+    if p_str:                     parts.append(f"💰 الإيجار: {p_str}")
+    if r_str:                     parts.append(f"🛏 الغرف:   {r_str}")
+    if s_str:                     parts.append(f"📐 المساحة: {s_str}")
+    if listing.get("floor"):      parts.append(f"🏢 الطابق:  {listing['floor']}")
+    if listing.get("available_from"): parts.append(f"📅 الإتاحة: {listing['available_from']}")
+    parts.append(wbs_line)
+    if soc_badge: parts.append(soc_badge)
 
-    msg = "\n".join(lines).strip()
+    msg = "\n".join(parts).strip()
     if len(msg) > 1020:
         msg = msg[:1017] + "…"
 
@@ -1145,7 +1216,6 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
         rows.append([InlineKeyboardButton("🔍 عرض الإعلان", url=view_url)])
     if apply_url and apply_url != view_url:
         rows.append([InlineKeyboardButton("📝 تقدم الآن", url=apply_url)])
-
     return msg, InlineKeyboardMarkup(rows) if rows else None
 
 
@@ -1155,8 +1225,6 @@ def format_listing(listing: dict) -> tuple[str, InlineKeyboardMarkup | None]:
 
 def build_app() -> Application:
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Commands
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("help",      cmd_help))
     app.add_handler(CommandHandler("settings",  cmd_settings))
@@ -1178,18 +1246,14 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("ping",      cmd_ping))
     app.add_handler(CommandHandler("uptime",    cmd_uptime))
     app.add_handler(CommandHandler("reset",     cmd_reset))
-
-    # Inline callbacks
-    app.add_handler(CallbackQueryHandler(callback_cfg,      pattern="^cfg:"))
-    app.add_handler(CallbackQueryHandler(callback_src,      pattern="^src:"))
-    app.add_handler(CallbackQueryHandler(callback_area,     pattern="^area:"))
-    app.add_handler(CallbackQueryHandler(callback_price,    pattern="^price:"))
-    app.add_handler(CallbackQueryHandler(callback_rooms,    pattern="^rooms:"))
-    app.add_handler(CallbackQueryHandler(callback_social,   pattern="^soc:"))
-    app.add_handler(CallbackQueryHandler(callback_household,pattern="^hh:"))
-    app.add_handler(CallbackQueryHandler(callback_schedule, pattern="^sch:"))
-    app.add_handler(CallbackQueryHandler(callback_mpc,      pattern="^mpc:"))
-
-    # Text buttons
+    app.add_handler(CallbackQueryHandler(callback_cfg,       pattern="^cfg:"))
+    app.add_handler(CallbackQueryHandler(callback_price,     pattern="^price:"))
+    app.add_handler(CallbackQueryHandler(callback_rooms,     pattern="^rooms:"))
+    app.add_handler(CallbackQueryHandler(callback_src,       pattern="^src:"))
+    app.add_handler(CallbackQueryHandler(callback_area,      pattern="^area:"))
+    app.add_handler(CallbackQueryHandler(callback_social,    pattern="^soc:"))
+    app.add_handler(CallbackQueryHandler(callback_household, pattern="^hh:"))
+    app.add_handler(CallbackQueryHandler(callback_schedule,  pattern="^sch:"))
+    app.add_handler(CallbackQueryHandler(callback_mpc,       pattern="^mpc:"))
     app.add_handler(MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, handle_text))
     return app
