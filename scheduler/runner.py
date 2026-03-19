@@ -12,7 +12,7 @@ from scrapers import ALL_SCRAPERS
 from scrapers.image_fetcher import fetch_og_image
 from scrapers.circuit_breaker import get_breaker
 from filters import is_wbs, passes_price, passes_rooms, score_listing, get_score_label
-from filters.wbs_filter import enrich, extract_wbs_level, passes_area
+from filters.wbs_filter import enrich, extract_wbs_level, passes_area, passes_wbs_level
 from filters.social_filter import passes_jobcenter, passes_wohngeld, get_social_badge
 from database import (
     are_known, save_listing, purge_old_listings,
@@ -57,6 +57,8 @@ async def run_once() -> None:
     max_price      = float(settings.get("max_price") or DEFAULT_MAX_PRICE)
     min_rooms      = float(settings.get("min_rooms") or 0)
     wbs_only       = bool(settings.get("wbs_only", 0))
+    wbs_level_min  = int(settings.get("wbs_level_min") or 0)
+    wbs_level_max  = int(settings.get("wbs_level_max") or 999)
     household_size = int(settings.get("household_size") or 1)
     jobcenter_mode = bool(settings.get("jobcenter_mode", 0))
     wohngeld_mode  = bool(settings.get("wohngeld_mode", 0))
@@ -108,6 +110,10 @@ async def run_once() -> None:
         try:
             if wbs_only and not listing.get("trusted_wbs") and not is_wbs(listing):
                 continue
+            # WBS level filter (only after enrichment, done here on wbs_label)
+            if wbs_only and (wbs_level_min > 0 or wbs_level_max < 999):
+                if not passes_wbs_level(listing, wbs_level_min, wbs_level_max):
+                    continue
             if not passes_price(listing, max_price):
                 continue
             if min_rooms and not passes_rooms(listing, min_rooms):

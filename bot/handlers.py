@@ -35,12 +35,17 @@ _BOT_START_DT = datetime.now(timezone.utc)
 
 # ── Source registry ──────────────────────────────────────────────────────────
 SOURCE_META = {
+    # Government / large housing companies
     "gewobag":            ("Gewobag",         "🏛", True),
     "degewo":             ("Degewo",          "🏛", True),
     "howoge":             ("Howoge",          "🏛", True),
     "stadtundland":       ("Stadt und Land",  "🏛", True),
     "deutschewohnen":     ("Deutsche Wohnen", "🏛", True),
     "berlinovo":          ("Berlinovo",       "🏛", True),
+    "vonovia":            ("Vonovia",         "🏛", True),
+    "gesobau":            ("Gesobau",         "🏛", True),
+    "wbm":                ("WBM",             "🏛", True),
+    # Private platforms
     "immoscout":          ("ImmoScout24",     "🔍", False),
     "wggesucht":          ("WG-Gesucht",      "🔍", False),
     "ebay_kleinanzeigen": ("Kleinanzeigen",   "🔍", False),
@@ -108,6 +113,7 @@ BOT_COMMANDS = [
     BotCommand("ping",      "اختبار الاستجابة"),
     BotCommand("uptime",    "مدة التشغيل"),
     BotCommand("reset",     "إعادة الضبط"),
+    BotCommand("get_chat_id", "احصل على Chat ID"),
 ]
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -163,6 +169,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=MAIN_KEYBOARD,
     )
 
+
+
+async def cmd_get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Anyone can use this — helps first-time setup."""
+    cid = str(update.effective_chat.id)
+    uid = str(update.effective_user.id) if update.effective_user else "?"
+    await update.message.reply_text(
+        f"🆔 *معلوماتك:*\n\n"
+        f"Chat ID: `{cid}`\n"
+        f"User ID: `{uid}`\n\n"
+        f"_انسخ Chat ID وضعه في ملف .env أو setup\\_wizard.py_",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await cmd_start(update, context)
 
@@ -200,11 +220,15 @@ def _build_settings_keyboard(s: dict) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(f"📋 WBS [{wbs}]",          callback_data="cfg:wbs"),
-            InlineKeyboardButton(f"👥 اسرة [{n}]",           callback_data="cfg:household"),
+            InlineKeyboardButton(f"🎚 مستوى WBS",            callback_data="cfg:wbs_level"),
         ],
         [
-            InlineKeyboardButton(f"🏛 Jobcenter [{jc}]",     callback_data="cfg:social"),
-            InlineKeyboardButton(f"🏦 Wohngeld [{wg}]",      callback_data="cfg:social"),
+            InlineKeyboardButton(f"🏛 Jobcenter [{jc}]",     callback_data="cfg:jc_toggle"),
+            InlineKeyboardButton(f"🏦 Wohngeld [{wg}]",      callback_data="cfg:wg_toggle"),
+        ],
+        [
+            InlineKeyboardButton(f"👥 الأسرة [{n} فرد]",     callback_data="cfg:household"),
+            InlineKeyboardButton("⚙️ المزيد من الاجتماعي",  callback_data="cfg:social"),
         ],
         [
             InlineKeyboardButton(f"🌙 هدوء [{qs_lbl}]",     callback_data="cfg:schedule"),
@@ -324,6 +348,30 @@ async def callback_cfg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception: pass
         return
 
+    if data == "jc_toggle":
+        new = 0 if s.get("jobcenter_mode") else 1
+        await upsert_settings(chat_id, jobcenter_mode=new)
+        s["jobcenter_mode"] = new
+        await _refresh_settings(q, s); return
+
+    if data == "wg_toggle":
+        new = 0 if s.get("wohngeld_mode") else 1
+        await upsert_settings(chat_id, wohngeld_mode=new)
+        s["wohngeld_mode"] = new
+        await _refresh_settings(q, s); return
+
+    if data == "wbs_level":
+        wmin = int(s.get("wbs_level_min") or 0)
+        wmax = int(s.get("wbs_level_max") or 999)
+        try:
+            await q.edit_message_text(
+                _wbs_level_text(wmin, wmax),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=_wbs_level_keyboard(wmin, wmax),
+            )
+        except Exception: pass
+        return
+
     if data == "social":
         try:
             await q.edit_message_text(
@@ -355,6 +403,95 @@ async def callback_cfg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception: pass
         return
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WBS Level selector (100-220)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+WBS_LEVELS = [100, 140, 160, 180, 200, 220]
+
+
+def _wbs_level_text(wmin: int, wmax: int) -> str:
+    if wmin == 0 and wmax >= 999:
+        current = "كل المستويات"
+    elif wmin == wmax:
+        current = f"WBS {wmin} فقط"
+    else:
+        current = f"WBS {wmin} — WBS {wmax}"
+    lines = [
+        "🎚 *مستوى WBS المقبول*",
+        _sep(),
+        "",
+        f"الحالي: *{current}*",
+        "",
+        "اختر الحد الأدنى والأقصى للمستوى:",
+        "_مثال: إذا اخترت 100-160 يعرض WBS 100 و140 و160 فقط_",
+    ]
+    return "\n".join(lines)
+
+
+def _wbs_level_keyboard(wmin: int, wmax: int) -> InlineKeyboardMarkup:
+    rows = []
+    # Min row
+    min_row = []
+    for level in WBS_LEVELS:
+        tick = "✓" if level == wmin else ""
+        min_row.append(InlineKeyboardButton(
+            f"{tick}≥{level}", callback_data=f"wlvl:min:{level}"))
+    rows.append(min_row)
+    # Max row
+    max_row = []
+    for level in WBS_LEVELS:
+        tick = "✓" if level == wmax else ""
+        max_row.append(InlineKeyboardButton(
+            f"{tick}<={level}", callback_data=f"wlvl:max:{level}"))
+    rows.append(max_row)
+    # Quick presets
+    rows.append([
+        InlineKeyboardButton("WBS 100 فقط",       callback_data="wlvl:preset:100:100"),
+        InlineKeyboardButton("WBS 100-140",         callback_data="wlvl:preset:100:140"),
+        InlineKeyboardButton("كل المستويات",        callback_data="wlvl:preset:0:999"),
+    ])
+    rows.append([InlineKeyboardButton("◀️ رجوع", callback_data="wlvl:back")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def callback_wbs_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q       = update.callback_query
+    await q.answer()
+    if str(q.from_user.id) != str(CHAT_ID): return
+    chat_id = str(q.message.chat_id)
+    parts   = q.data.split(":", 3)
+    action  = parts[1]
+    s       = await get_settings(chat_id)
+    wmin    = int(s.get("wbs_level_min") or 0)
+    wmax    = int(s.get("wbs_level_max") or 999)
+
+    if action == "back":
+        await _refresh_settings(q, s); return
+    if action == "min":
+        wmin = int(parts[2])
+        if wmin > wmax: wmax = wmin
+        await upsert_settings(chat_id, wbs_level_min=wmin, wbs_level_max=wmax)
+        await q.answer(f"✅ من WBS {wmin}")
+    elif action == "max":
+        wmax = int(parts[2])
+        if wmax < wmin: wmin = wmax
+        await upsert_settings(chat_id, wbs_level_min=wmin, wbs_level_max=wmax)
+        await q.answer(f"✅ حتى WBS {wmax}")
+    elif action == "preset":
+        wmin, wmax = int(parts[2]), int(parts[3])
+        await upsert_settings(chat_id, wbs_level_min=wmin, wbs_level_max=wmax)
+        lbl = "كل المستويات" if wmin == 0 else f"WBS {wmin}-{wmax}"
+        await q.answer(f"✅ {lbl}")
+    try:
+        await q.edit_message_text(
+            _wbs_level_text(wmin, wmax),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_wbs_level_keyboard(wmin, wmax),
+        )
+    except Exception: pass
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Price keyboard
@@ -1226,6 +1363,7 @@ def format_listing(listing: dict) -> tuple:
 def build_app() -> Application:
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start",     cmd_start))
+    app.add_handler(CommandHandler("get_chat_id", cmd_get_chat_id))
     app.add_handler(CommandHandler("help",      cmd_help))
     app.add_handler(CommandHandler("settings",  cmd_settings))
     app.add_handler(CommandHandler("status",    cmd_status))
@@ -1247,6 +1385,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("uptime",    cmd_uptime))
     app.add_handler(CommandHandler("reset",     cmd_reset))
     app.add_handler(CallbackQueryHandler(callback_cfg,       pattern="^cfg:"))
+    app.add_handler(CallbackQueryHandler(callback_wbs_level, pattern="^wlvl:"))
     app.add_handler(CallbackQueryHandler(callback_price,     pattern="^price:"))
     app.add_handler(CallbackQueryHandler(callback_rooms,     pattern="^rooms:"))
     app.add_handler(CallbackQueryHandler(callback_src,       pattern="^src:"))

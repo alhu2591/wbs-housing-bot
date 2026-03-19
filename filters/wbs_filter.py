@@ -1,5 +1,6 @@
 """
-WBS filters, enrichment, and scoring — complete module.
+WBS filters, enrichment, and scoring — comprehensive extraction.
+Handles all German listing formats across 13 sources.
 """
 import hashlib
 import re
@@ -10,35 +11,64 @@ from config.settings import WBS_KEYWORDS
 logger = logging.getLogger(__name__)
 
 GOV_SOURCES = {
-    "gewobag", "degewo", "howoge",
-    "stadtundland", "deutschewohnen", "berlinovo",
+    "gewobag", "degewo", "howoge", "stadtundland", "deutschewohnen",
+    "berlinovo", "vonovia", "gesobau", "wbm",
 }
 
 URGENT_KEYWORDS = [
-    "ab sofort", "sofort frei", "sofort verfügbar",
-    "sofort bezugsfertig", "sofort einziehen",
+    "ab sofort", "sofort frei", "sofort verfügbar", "sofort bezugsfertig",
+    "sofort einziehen", "sofort beziehbar", "ab sofort frei",
 ]
 
+# Comprehensive feature detection
 FEATURE_KEYWORDS = {
-    "balkon":       "بلكونة",
-    "terrasse":     "تراس",
-    "garten":       "حديقة",
-    "aufzug":       "مصعد",
-    "fahrstuhl":    "مصعد",        # synonym → same Arabic label
-    "einbauküche":  "مطبخ مجهز",
-    "keller":       "مخزن",
-    "stellplatz":   "موقف سيارة",
-    "parkplatz":    "موقف سيارة",  # synonym → same Arabic label
-    "barrierefrei": "بدون عوائق",
-    "neubau":       "بناء جديد",
-    "erstbezug":    "أول سكن",
-    "waschmaschine":"غسالة",
-    "duschbad":     "حمام إضافي",
+    "balkon":          "🌿 بلكونة",
+    "terrasse":        "🌿 تراس",
+    "dachterrasse":    "🌿 تراس علوي",
+    "loggia":          "🌿 لوجيا",
+    "garten":          "🌱 حديقة",
+    "gemeinschaftsgarten": "🌱 حديقة مشتركة",
+    "aufzug":          "🛗 مصعد",
+    "fahrstuhl":       "🛗 مصعد",
+    "lift":            "🛗 مصعد",
+    "einbauküche":     "🍳 مطبخ مجهز",
+    "einbaukuche":     "🍳 مطبخ مجهز",
+    "küche":           "🍳 مطبخ",
+    "keller":          "📦 مخزن",
+    "abstellraum":     "📦 مخزن",
+    "abstellkammer":   "📦 غرفة تخزين",
+    "stellplatz":      "🚗 موقف",
+    "parkplatz":       "🚗 موقف",
+    "tiefgarage":      "🚗 جراج أرضي",
+    "garage":          "🚗 جراج",
+    "fahrradkeller":   "🚲 تخزين دراجات",
+    "waschmaschine":   "🫧 غسالة",
+    "waschraum":       "🫧 غسالة مشتركة",
+    "barrierefrei":    "♿ بدون عوائق",
+    "rollstuhl":       "♿ مناسب للكرسي المتحرك",
+    "neubau":          "🏗 بناء جديد",
+    "erstbezug":       "✨ أول سكن",
+    "erstbezug nach sanierung": "✨ مجدد",
+    "saniert":         "🔨 مجدد",
+    "fußbodenheizung": "🌡 تدفئة أرضية",
+    "fernwärme":       "🌡 تدفئة مركزية",
+    "einzel":          "🏠 مبنى مستقل",
+    "dachgeschoss":    "🏠 علوي",
+    "penthouse":       "🏠 بنتهاوس",
+    "laminat":         "🪵 أرضية خشبية",
+    "parkett":         "🪵 باركيه",
+    "fliesen":         "🟩 بلاط",
+    "duschbad":        "🚿 دش",
+    "badewanne":       "🛁 حوض استحمام",
+    "sep. wc":         "🚽 حمام منفصل",
+    "rolladen":        "🪟 شرائح ستائر",
+    "videogegensprechanlage": "📹 إنترفون مرئي",
+    "gegensprechanlage": "🔔 جرس باب",
 }
 
 _TRACKING_PARAMS = {
     "utm_source","utm_medium","utm_campaign","utm_content","utm_term",
-    "ref","referrer","source","fbclid","gclid","_ga","mc_cid",
+    "ref","referrer","source","fbclid","gclid","_ga","mc_cid","tracking",
 }
 
 _MONTHS_AR = {
@@ -64,16 +94,13 @@ def passes_price(listing: dict, max_price: float) -> bool:
 
 
 def passes_rooms(listing: dict, min_rooms: float) -> bool:
-    if not min_rooms:
-        return True
+    if not min_rooms: return True
     rooms = listing.get("rooms")
     return True if rooms is None else float(rooms) >= float(min_rooms)
 
 
-def passes_area(listing: dict, areas: list[str]) -> bool:
-    """Matches ANY selected area (OR logic). Empty = all Berlin."""
-    if not areas:
-        return True
+def passes_area(listing: dict, areas: list) -> bool:
+    if not areas: return True
     combined = " ".join(
         str(listing.get(f) or "").lower()
         for f in ("location", "district", "description", "title")
@@ -81,7 +108,18 @@ def passes_area(listing: dict, areas: list[str]) -> bool:
     return any(a.lower() in combined for a in areas)
 
 
-# ── ID / URL normalization ────────────────────────────────────────────────────
+def passes_wbs_level(listing: dict, min_level: int, max_level: int) -> bool:
+    """Filter by WBS level range. Returns True if level unknown (trusted)."""
+    wbs_level = listing.get("wbs_level")
+    if not wbs_level: return True
+    # Extract number from "WBS 100"
+    m = re.search(r"(\d{2,3})", str(wbs_level))
+    if not m: return True
+    level = int(m.group(1))
+    return min_level <= level <= max_level
+
+
+# ── URL helpers ───────────────────────────────────────────────────────────────
 
 def normalize_url(url: str) -> str:
     try:
@@ -97,34 +135,42 @@ def make_id(url: str) -> str:
     return hashlib.sha256(normalize_url(url).encode()).hexdigest()[:16]
 
 
-# ── Extractors ────────────────────────────────────────────────────────────────
+# ── Comprehensive extractors ──────────────────────────────────────────────────
 
 def extract_size(text: str) -> float | None:
-    # Match formats: 62m², 62 m², 62qm, 62 qm, 62 Quadratmeter
-    m = re.search(
+    """Extract apartment size from German text. Handles all common formats."""
+    patterns = [
         r"(\d[\d\.,]*)\s*(?:m[²2²]|qm\b|quadratmeter)",
-        text, re.IGNORECASE,
-    )
-    if m:
-        raw = m.group(1).replace(".", "").replace(",", ".")
-        try:
-            val = float(raw)
-            return val if 10 < val < 500 else None
-        except ValueError:
-            pass
+        r"wohnfläche[:\s]+(\d[\d\.,]*)\s*(?:m[²2²]|qm)?",
+        r"ca\.?\s*(\d[\d\.,]*)\s*(?:m[²2²]|qm)",
+        r"(\d[\d\.,]*)\s*(?:m[²2²]|qm)\s*wohnfläche",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            raw = m.group(1).replace(".", "").replace(",", ".")
+            try:
+                val = float(raw)
+                if 10 < val < 500:
+                    return val
+            except ValueError:
+                pass
     return None
 
 
 def extract_floor(text: str) -> str | None:
+    """Extract floor from German text. Handles OG, EG, DG, Stock, Etage."""
     text_l = text.lower()
     patterns = [
         (r"(\d+)\.\s*og\b",               lambda m: f"الطابق {m.group(1)}"),
         (r"(\d+)\.\s*(?:ober)?geschoss",  lambda m: f"الطابق {m.group(1)}"),
         (r"(\d+)\.\s*etage",              lambda m: f"الطابق {m.group(1)}"),
         (r"(\d+)\.\s*stock\b",            lambda m: f"الطابق {m.group(1)}"),
-        (r"\bhochparterre\b",             lambda m: "الطابق الأرضي المرتفع"),
-        (r"\berdgeschoss\b|\beg\b",       lambda m: "الطابق الأرضي"),
-        (r"\bdachgeschoss\b|\bdg\b",      lambda m: "الطابق العلوي"),
+        (r"im\s+(\d+)\.\s*(?:og|stock|etage|geschoss)", lambda m: f"الطابق {m.group(1)}"),
+        (r"\bhochparterre\b",             lambda _: "الطابق الأرضي المرتفع"),
+        (r"\berdgeschoss\b|\beg\b",       lambda _: "الطابق الأرضي"),
+        (r"\bdachgeschoss\b|\bdg\b",      lambda _: "الطابق العلوي"),
+        (r"\bpenthouse\b",                lambda _: "بنتهاوس"),
     ]
     for pattern, formatter in patterns:
         m = re.search(pattern, text_l)
@@ -134,23 +180,33 @@ def extract_floor(text: str) -> str | None:
 
 
 def extract_available(text: str) -> str | None:
+    """Extract availability date from German text."""
     text_l = text.lower()
     if any(kw in text_l for kw in URGENT_KEYWORDS):
         return "فوري 🔥"
+    # Date format: DD.MM.YYYY or DD/MM/YYYY
     m = re.search(r"ab\s+(\d{1,2}[./]\d{1,2}[./]\d{2,4})", text_l)
+    if m: return f"من {m.group(1)}"
+    # Quarter: Q1/Q2/2025
+    m = re.search(r"(?:ab\s+)?q([1-4])[./\s]*(\d{4})", text_l)
     if m:
-        return f"من {m.group(1)}"
+        quarter_ar = {"1":"الربع الأول","2":"الربع الثاني","3":"الربع الثالث","4":"الربع الرابع"}
+        return f"{quarter_ar[m.group(1)]} {m.group(2)}"
+    # Month name
     months_pattern = "|".join(_MONTHS_AR.keys())
-    m = re.search(rf"ab\s+({months_pattern})\s*(\d{{4}})?", text_l)
+    m = re.search(rf"(?:ab\s+)?({months_pattern})\s*(\d{{4}})?", text_l)
     if m:
         month_ar = _MONTHS_AR.get(m.group(1), m.group(1))
         year = m.group(2) or ""
         return f"من {month_ar} {year}".strip()
+    # "nach vereinbarung"
+    if "nach vereinbarung" in text_l or "nach absprache" in text_l:
+        return "بالاتفاق"
     return None
 
 
 def extract_features(text: str) -> list[str]:
-    """Return deduplicated Arabic feature labels found in text."""
+    """Extract Arabic feature labels from German listing text. Deduplicated."""
     text_l = text.lower()
     seen   = set()
     result = []
@@ -161,12 +217,35 @@ def extract_features(text: str) -> list[str]:
     return result
 
 
+def extract_heating(text: str) -> str | None:
+    """Extract heating type."""
+    text_l = text.lower()
+    if "fußbodenheizung" in text_l: return "تدفئة أرضية"
+    if "fernwärme" in text_l: return "تدفئة مركزية"
+    if "gasheizung" in text_l or "gas" in text_l: return "تدفئة غاز"
+    if "ölheizung" in text_l: return "تدفئة زيت"
+    if "elektroheizung" in text_l: return "تدفئة كهربائي"
+    return None
+
+
+def extract_deposit(text: str) -> str | None:
+    """Extract deposit (Kaution) amount."""
+    m = re.search(r"kaution[:\s]*(\d[\d\.,]*)\s*€?", text, re.IGNORECASE)
+    if m:
+        from scrapers._common import parse_price
+        val = parse_price(m.group(1) + " €")
+        if val: return f"{val:.0f} €"
+    # "3 Monatsmieten" pattern
+    m = re.search(r"(\d)\s*monatsmieten?\s*(?:kaution)?", text, re.IGNORECASE)
+    if m: return f"{m.group(1)} × الإيجار"
+    return None
+
+
 def extract_wbs_level(listing: dict) -> str | None:
     """
-    Extract WBS level from listing fields (NOT from Arabic summary).
-    Returns 'WBS 100', 'WBS 140', ..., 'WBS مطلوب', or None.
+    Extract WBS level. Scans German fields only (not Arabic summary).
+    Returns: 'WBS 100', 'WBS 140', ..., 'WBS مطلوب', or None.
     """
-    # Only scan German-language fields — not AI-generated Arabic summary
     haystack = " ".join(
         str(listing.get(f) or "").lower()
         for f in ("title", "description", "wbs_label")
@@ -182,12 +261,14 @@ def extract_wbs_level(listing: dict) -> str | None:
     m = re.search(r"wbs[\s\-_]*(\d{2,3})", haystack)
     if m:
         return f"WBS {m.group(1)}"
-
     return "WBS مطلوب"
 
 
 def enrich(listing: dict) -> dict:
-    """Extract size, floor, availability, features, price/m² from text."""
+    """
+    Extract all structured data from listing text fields.
+    Modifies listing in-place, returns it.
+    """
     all_text = " ".join(
         str(listing.get(f) or "")
         for f in ("title", "description", "location")
@@ -203,6 +284,13 @@ def enrich(listing: dict) -> dict:
     listing["features"]  = extract_features(all_text)
     listing["is_urgent"] = any(kw in all_text.lower() for kw in URGENT_KEYWORDS)
 
+    # heating + deposit (extra info)
+    if not listing.get("heating"):
+        listing["heating"] = extract_heating(all_text)
+    if not listing.get("deposit"):
+        listing["deposit"] = extract_deposit(all_text)
+
+    # Price per m²
     price = listing.get("price")
     size  = listing.get("size_m2")
     listing["price_per_m2"] = round(price / size, 1) if price and size else None
@@ -213,9 +301,8 @@ def enrich(listing: dict) -> dict:
 # ── Scoring ───────────────────────────────────────────────────────────────────
 
 def score_listing(listing: dict) -> int:
-    """Score 0–32. Higher = notify first."""
     score = 0
-    if listing.get("trusted_wbs") or listing.get("source", "").lower() in GOV_SOURCES:
+    if listing.get("trusted_wbs") or listing.get("source","").lower() in GOV_SOURCES:
         score += 8
     price = listing.get("price")
     if price:
@@ -232,8 +319,7 @@ def score_listing(listing: dict) -> int:
     if size:
         if size >= 70:   score += 4
         elif size >= 55: score += 2
-    if listing.get("is_urgent"):
-        score += 4
+    if listing.get("is_urgent"):   score += 4
     score += min(len(listing.get("features") or []), 3)
     return score
 

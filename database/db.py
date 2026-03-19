@@ -50,6 +50,8 @@ _DDL = [
         household_size   INTEGER DEFAULT 1,
         jobcenter_mode   INTEGER DEFAULT 0,
         wohngeld_mode    INTEGER DEFAULT 0,
+        wbs_level_min    INTEGER DEFAULT 0,
+        wbs_level_max    INTEGER DEFAULT 999,
         quiet_start      INTEGER DEFAULT -1,
         quiet_end        INTEGER DEFAULT -1,
         max_per_cycle    INTEGER DEFAULT 10,
@@ -76,6 +78,8 @@ _MIGRATIONS = [
     ("user_settings",  "household_size", "INTEGER DEFAULT 1"),
     ("user_settings",  "jobcenter_mode", "INTEGER DEFAULT 0"),
     ("user_settings",  "wohngeld_mode",  "INTEGER DEFAULT 0"),
+    ("user_settings",  "wbs_level_min",  "INTEGER DEFAULT 0"),
+    ("user_settings",  "wbs_level_max",  "INTEGER DEFAULT 999"),
     ("user_settings",  "sources",        "TEXT DEFAULT '[]'"),
     ("user_settings",  "quiet_start",    "INTEGER DEFAULT -1"),
     ("user_settings",  "quiet_end",      "INTEGER DEFAULT -1"),
@@ -215,6 +219,7 @@ _DEFAULTS = {
     "areas": "[]", "sources": "[]",
     "household_size": 1, "jobcenter_mode": 0, "wohngeld_mode": 0,
     "quiet_start": -1, "quiet_end": -1, "max_per_cycle": 10,
+    "wbs_level_min": 0, "wbs_level_max": 999,
 }
 
 
@@ -243,10 +248,10 @@ async def upsert_settings(chat_id: str, **kwargs) -> None:
         await db.execute(
             """INSERT INTO user_settings
                (chat_id,active,max_price,min_rooms,area,wbs_only,areas,sources,
-                household_size,jobcenter_mode,wohngeld_mode,quiet_start,quiet_end,max_per_cycle,updated_at)
+                household_size,jobcenter_mode,wohngeld_mode,quiet_start,quiet_end,max_per_cycle,wbs_level_min,wbs_level_max,updated_at)
                VALUES
                (:chat_id,:active,:max_price,:min_rooms,:area,:wbs_only,:areas,:sources,
-                :household_size,:jobcenter_mode,:wohngeld_mode,:quiet_start,:quiet_end,:max_per_cycle,:updated_at)
+                :household_size,:jobcenter_mode,:wohngeld_mode,:quiet_start,:quiet_end,:max_per_cycle,:wbs_level_min,:wbs_level_max,:updated_at)
                ON CONFLICT(chat_id) DO UPDATE SET
                  active=excluded.active, max_price=excluded.max_price,
                  min_rooms=excluded.min_rooms, area=excluded.area,
@@ -257,6 +262,8 @@ async def upsert_settings(chat_id: str, **kwargs) -> None:
                  wohngeld_mode=excluded.wohngeld_mode,
                  quiet_start=excluded.quiet_start, quiet_end=excluded.quiet_end,
                  max_per_cycle=excluded.max_per_cycle,
+                 wbs_level_min=excluded.wbs_level_min,
+                 wbs_level_max=excluded.wbs_level_max,
                  updated_at=excluded.updated_at""",
             current,
         )
