@@ -1066,7 +1066,7 @@ if HAS_KIVY:
             self._wbs_chip.bind(state=self._on_wbs); chips.add_widget(self._wbs_chip)
             self._status=lbl("اضغط 🔄 للبحث",size=12,color=TEXT2,size_hint_y=None,height=dp(30))
             chips.add_widget(self._status)
-            self._bg_ind=lbl("⏸",size=14,color=TEXT3,size_hint=(None,None),size=(dp(28),dp(30)))
+            self._bg_ind=lbl("⏸",size=14,color=TEXT3,size_hint=(None,None),height=dp(30))
             chips.add_widget(self._bg_ind); root.add_widget(chips); root.add_widget(div())
             self._cards=BoxLayout(orientation="vertical",spacing=dp(10),
                                    padding=(dp(10),dp(10)),size_hint_y=None)
