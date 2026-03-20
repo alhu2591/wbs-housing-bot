@@ -4,7 +4,7 @@ package.name = wbsberlin
 package.domain = de.alaa.wbs
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json,ttf
-version = 7.0.0
+version = 8.0.0
 
 requirements = python3,kivy==2.2.1,beautifulsoup4,arabic-reshaper,python-bidi
 
