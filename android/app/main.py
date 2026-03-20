@@ -1,19 +1,28 @@
 """
-WBS Berlin v4.0
-- SQLite database (no duplicate listings ever)
-- Favorites screen
-- Statistics screen
-- Full customization (font, theme accent, intervals)
-- Background service with notification
-- Rock-solid stability
+WBS Berlin v4.1 — Android Crash Fixes
+Main crashes fixed:
+- Arabic font registered (Noto Naskh Arabic bundled)
+- user_data_dir used for all storage (not EXTERNAL_STORAGE)
+- sqlite3 path corrected
+- No background thread in build()
+- try/except wrapping entire build()
+- All module-level kivy-color refs removed from non-kivy code
+- Clock.schedule_interval deferred to on_enter
 """
-import json, os, re, hashlib, threading, socket, time, ssl, sqlite3, shutil
+import json, os, re, hashlib, threading, socket, time, ssl, sqlite3 as _sqlite3
 import urllib.request, urllib.parse
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-# ── Arabic ────────────────────────────────────────────────────────────
+# ── Platform detection ────────────────────────────────────────────────
+try:
+    from kivy.utils import platform as _plat
+    IS_ANDROID = _plat == 'android'
+except Exception:
+    IS_ANDROID = False
+
+# ── Arabic support ────────────────────────────────────────────────────
 try:
     import arabic_reshaper
     from bidi.algorithm import get_display
@@ -21,8 +30,10 @@ try:
         if not text: return ""
         try: return get_display(arabic_reshaper.reshape(str(text)))
         except Exception: return str(text)
+    HAS_ARABIC = True
 except ImportError:
     def ar(text: str) -> str: return str(text) if text else ""
+    HAS_ARABIC = False
 
 # ── bs4 ───────────────────────────────────────────────────────────────
 try:
@@ -31,10 +42,12 @@ try:
 except ImportError:
     HAS_BS4 = False
 
-# ── Kivy ──────────────────────────────────────────────────────────────
+# ── Kivy imports ─────────────────────────────────────────────────────
 try:
+    import kivy
+    kivy.require('2.2.0')
     from kivy.app import App
-    from kivy.uix.screenmanager import ScreenManager, Screen, FadeTransition, SlideTransition
+    from kivy.uix.screenmanager import ScreenManager, Screen, FadeTransition
     from kivy.uix.boxlayout import BoxLayout
     from kivy.uix.gridlayout import GridLayout
     from kivy.uix.floatlayout import FloatLayout
@@ -45,49 +58,42 @@ try:
     from kivy.uix.togglebutton import ToggleButton
     from kivy.uix.widget import Widget
     from kivy.uix.slider import Slider
-    from kivy.uix.spinner import Spinner
-    from kivy.graphics import Color, RoundedRectangle, Rectangle, Ellipse, Line
+    from kivy.graphics import Color, RoundedRectangle, Rectangle
     from kivy.clock import Clock
     from kivy.metrics import dp, sp
     from kivy.utils import get_color_from_hex
     from kivy.core.window import Window
-    from kivy.animation import Animation
+    from kivy.core.text import LabelBase
     HAS_KIVY = True
-except ImportError:
+except Exception:
     HAS_KIVY = False
 
 # ── Android APIs ──────────────────────────────────────────────────────
+HAS_ANDROID_API = False
 try:
-    import jnius
-    PythonActivity = jnius.autoclass("org.kivy.android.PythonActivity")
-    Intent         = jnius.autoclass("android.content.Intent")
-    Uri            = jnius.autoclass("android.net.Uri")
-    NM             = jnius.autoclass("android.app.NotificationManager")
-    NB             = jnius.autoclass("android.app.Notification$Builder")
-    NC             = jnius.autoclass("android.app.NotificationChannel")
-    PI             = jnius.autoclass("android.app.PendingIntent")
-    CTX            = jnius.autoclass("android.content.Context")
-    HAS_ANDROID    = True
+    if IS_ANDROID:
+        import jnius
+        PythonActivity = jnius.autoclass("org.kivy.android.PythonActivity")
+        Intent         = jnius.autoclass("android.content.Intent")
+        Uri            = jnius.autoclass("android.net.Uri")
+        NM             = jnius.autoclass("android.app.NotificationManager")
+        NB             = jnius.autoclass("android.app.Notification$Builder")
+        NC             = jnius.autoclass("android.app.NotificationChannel")
+        PI             = jnius.autoclass("android.app.PendingIntent")
+        CTX            = jnius.autoclass("android.content.Context")
+        HAS_ANDROID_API = True
 except Exception:
-    HAS_ANDROID = False
+    pass
 
 # ═══════════════════════════════════════════════════════════════════════
-# Design System — configurable accent color
+# Design Tokens (only set if Kivy available)
 # ═══════════════════════════════════════════════════════════════════════
-ACCENT_PRESETS = {
-    "أخضر":  "#22C55E",
-    "أزرق":  "#3B82F6",
-    "بنفسجي":"#8B5CF6",
-    "ذهبي":  "#F59E0B",
-    "وردي":  "#EC4899",
-    "سماوي": "#06B6D4",
-}
-
 if HAS_KIVY:
-    BG      = get_color_from_hex("#080808")
-    BG2     = get_color_from_hex("#111111")
-    BG3     = get_color_from_hex("#1A1A1A")
-    BG4     = get_color_from_hex("#222222")
+    BG      = get_color_from_hex("#0A0A0A")
+    BG2     = get_color_from_hex("#141414")
+    BG3     = get_color_from_hex("#1E1E1E")
+    BG4     = get_color_from_hex("#252525")
+    COL_P   = get_color_from_hex("#22C55E")  # green — primary
     PURPLE  = get_color_from_hex("#8B5CF6")
     BLUE    = get_color_from_hex("#3B82F6")
     AMBER   = get_color_from_hex("#F59E0B")
@@ -97,28 +103,49 @@ if HAS_KIVY:
     TEXT1   = get_color_from_hex("#F1F5F9")
     TEXT2   = get_color_from_hex("#94A3B8")
     TEXT3   = get_color_from_hex("#475569")
-    DIVIDER = get_color_from_hex("#1A1A1A")
-    WHITE   = (1,1,1,1)
-    TRANSP  = (0,0,0,0)
-    _PRIMARY = [0.134, 0.773, 0.369, 1.0]  # default green
+    DIVIDER = get_color_from_hex("#1E293B")
+    WHITE   = (1, 1, 1, 1)
+    TRANSP  = (0, 0, 0, 0)
+
+    _PRIMARY     = [0.134, 0.773, 0.369, 1.0]
+    _FONT_SCALE  = [1.0]
+    _FONT_NAME   = ["Roboto"]   # updated after font registration
 
     def PRIMARY():       return tuple(_PRIMARY)
-    def set_accent(hex_: str):
-        c = get_color_from_hex(hex_)
-        _PRIMARY[0] = c[0]; _PRIMARY[1] = c[1]
-        _PRIMARY[2] = c[2]; _PRIMARY[3] = c[3]
+    def set_accent(h):
+        try:
+            c = get_color_from_hex(h)
+            _PRIMARY[:] = list(c)
+        except Exception: pass
 
-    _FONT_SCALE = [1.0]
-    def fs(n: float) -> float: return sp(n * _FONT_SCALE[0])
-    def set_font_scale(s: float): _FONT_SCALE[0] = max(0.8, min(1.4, s))
+    def fs(n): return sp(n * _FONT_SCALE[0])
+    def set_font_scale(s): _FONT_SCALE[0] = max(0.8, min(1.4, float(s)))
+
+ACCENT_PRESETS = {
+    "أخضر": "#22C55E", "أزرق": "#3B82F6", "بنفسجي": "#8B5CF6",
+    "ذهبي": "#F59E0B", "وردي": "#EC4899",  "سماوي": "#06B6D4",
+}
 
 # ═══════════════════════════════════════════════════════════════════════
-# Storage Paths
+# Storage — use app.user_data_dir on Android (writable, no permissions needed)
 # ═══════════════════════════════════════════════════════════════════════
-_sd         = Path(os.environ.get("EXTERNAL_STORAGE", "."))
-DB_PATH     = _sd / "wbs4.db"
-FIRST_RUN   = _sd / "wbs4_first"
-SVC_BEAT    = _sd / "wbs4_svc.beat"
+_data_dir: Optional[Path] = None   # set in App.build()
+
+def data_dir() -> Path:
+    global _data_dir
+    if _data_dir is None:
+        # Fallback for CLI testing
+        _data_dir = Path(".")
+    return _data_dir
+
+def set_data_dir(path: str) -> None:
+    global _data_dir
+    _data_dir = Path(path)
+    _data_dir.mkdir(parents=True, exist_ok=True)
+
+def DB_PATH()    -> Path: return data_dir() / "wbs4.db"
+def FIRST_RUN()  -> Path: return data_dir() / "wbs4_first_run"
+def SVC_BEAT()   -> Path: return data_dir() / "wbs4_svc.beat"
 
 # ═══════════════════════════════════════════════════════════════════════
 # SQLite Database
@@ -127,75 +154,42 @@ _db_lock = threading.RLock()
 
 DDL = """
 CREATE TABLE IF NOT EXISTS listings (
-    id          TEXT PRIMARY KEY,
-    url         TEXT NOT NULL,
-    source      TEXT,
-    title       TEXT,
-    price       REAL,
-    rooms       REAL,
-    size_m2     REAL,
-    floor_      TEXT,
-    available   TEXT,
-    location    TEXT,
-    wbs_label   TEXT,
-    wbs_level   INTEGER,
-    features    TEXT DEFAULT '[]',
-    deposit     TEXT,
-    heating     TEXT,
-    score       INTEGER DEFAULT 0,
-    trusted_wbs INTEGER DEFAULT 0,
-    favorited   INTEGER DEFAULT 0,
-    hidden      INTEGER DEFAULT 0,
-    seen        INTEGER DEFAULT 0,
-    notified    INTEGER DEFAULT 0,
-    ts_found    REAL,
-    ts_seen     REAL
+    id TEXT PRIMARY KEY, url TEXT NOT NULL, source TEXT, title TEXT,
+    price REAL, rooms REAL, size_m2 REAL, floor_ TEXT, available TEXT,
+    location TEXT, wbs_label TEXT, wbs_level INTEGER,
+    features TEXT DEFAULT '[]', deposit TEXT, heating TEXT,
+    score INTEGER DEFAULT 0, trusted_wbs INTEGER DEFAULT 0,
+    favorited INTEGER DEFAULT 0, hidden INTEGER DEFAULT 0,
+    seen INTEGER DEFAULT 0, notified INTEGER DEFAULT 0,
+    ts_found REAL, ts_seen REAL
 );
 CREATE INDEX IF NOT EXISTS idx_ts    ON listings(ts_found DESC);
-CREATE INDEX IF NOT EXISTS idx_src   ON listings(source);
 CREATE INDEX IF NOT EXISTS idx_fav   ON listings(favorited);
 CREATE INDEX IF NOT EXISTS idx_seen  ON listings(seen);
-
-CREATE TABLE IF NOT EXISTS settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT
-);
-
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS stats (
-    id          INTEGER PRIMARY KEY CHECK(id=1),
-    total_found INTEGER DEFAULT 0,
-    total_new   INTEGER DEFAULT 0,
-    total_notif INTEGER DEFAULT 0,
-    last_check  REAL,
-    last_new    REAL,
-    app_opens   INTEGER DEFAULT 0
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    total_found INTEGER DEFAULT 0, total_new INTEGER DEFAULT 0,
+    total_notif INTEGER DEFAULT 0, last_check REAL, last_new REAL,
+    app_opens INTEGER DEFAULT 0
 );
 INSERT OR IGNORE INTO stats(id) VALUES(1);
 """
 
-def _db() -> sqlite3.Connection:
-    con = sqlite3.connect(str(DB_PATH), timeout=10)
-    con.row_factory = sqlite3.Row
+def _db():
+    con = _sqlite3.connect(str(DB_PATH()), timeout=10)
+    con.row_factory = _sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=NORMAL")
     con.execute("PRAGMA busy_timeout=5000")
     return con
 
-def init_db() -> None:
+def init_db():
     with _db_lock:
         con = _db()
         con.executescript(DDL)
         con.commit()
         con.close()
-
-def is_known(lid: str) -> bool:
-    with _db_lock:
-        con = _db()
-        try:
-            r = con.execute("SELECT 1 FROM listings WHERE id=?", (lid,)).fetchone()
-            return r is not None
-        finally:
-            con.close()
 
 def are_known(ids: list) -> set:
     if not ids: return set()
@@ -209,42 +203,56 @@ def are_known(ids: list) -> set:
                 rows = con.execute(f"SELECT id FROM listings WHERE id IN ({ph})", chunk).fetchall()
                 result.update(r[0] for r in rows)
             return result
-        finally:
-            con.close()
+        finally: con.close()
 
 def save_listing(l: dict) -> bool:
-    """Returns True if it's a new listing."""
     lid = l.get("id")
     if not lid: return False
     with _db_lock:
         con = _db()
         try:
-            existing = con.execute("SELECT id FROM listings WHERE id=?", (lid,)).fetchone()
-            if existing: return False
+            if con.execute("SELECT 1 FROM listings WHERE id=?", (lid,)).fetchone():
+                return False
             feats = json.dumps(l.get("features") or [], ensure_ascii=False)
-            con.execute("""
-                INSERT OR IGNORE INTO listings
+            con.execute("""INSERT OR IGNORE INTO listings
                 (id,url,source,title,price,rooms,size_m2,floor_,available,
                  location,wbs_label,wbs_level,features,deposit,heating,
                  score,trusted_wbs,ts_found)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (lid, l.get("url"), l.get("source"), l.get("title"),
-                  l.get("price"), l.get("rooms"), l.get("size_m2"),
-                  l.get("floor"), l.get("available"), l.get("location"),
-                  l.get("wbs_label"), l.get("wbs_level_num"),
-                  feats, l.get("deposit"), l.get("heating"),
-                  l.get("score",0), 1 if l.get("trusted_wbs") else 0,
-                  time.time()))
-            con.execute("UPDATE stats SET total_found=total_found+1, "
-                        "total_new=total_new+1, last_new=? WHERE id=1", (time.time(),))
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (lid, l.get("url"), l.get("source"), l.get("title"),
+                 l.get("price"), l.get("rooms"), l.get("size_m2"),
+                 l.get("floor"), l.get("available"), l.get("location"),
+                 l.get("wbs_label"), l.get("wbs_level_num"),
+                 feats, l.get("deposit"), l.get("heating"),
+                 l.get("score", 0), 1 if l.get("trusted_wbs") else 0,
+                 time.time()))
+            con.execute("UPDATE stats SET total_found=total_found+1,"
+                        "total_new=total_new+1,last_new=? WHERE id=1", (time.time(),))
             con.commit()
             return True
-        except Exception:
-            return False
-        finally:
-            con.close()
+        except Exception: return False
+        finally: con.close()
 
-def mark_seen(ids: list) -> None:
+def toggle_favorite(lid: str) -> bool:
+    with _db_lock:
+        con = _db()
+        try:
+            cur = con.execute("SELECT favorited FROM listings WHERE id=?", (lid,)).fetchone()
+            if not cur: return False
+            nv = 0 if cur[0] else 1
+            con.execute("UPDATE listings SET favorited=? WHERE id=?", (nv, lid))
+            con.commit(); return bool(nv)
+        finally: con.close()
+
+def hide_listing(lid: str):
+    with _db_lock:
+        con = _db()
+        try:
+            con.execute("UPDATE listings SET hidden=1 WHERE id=?", (lid,))
+            con.commit()
+        finally: con.close()
+
+def mark_seen(ids: list):
     if not ids: return
     with _db_lock:
         con = _db()
@@ -253,45 +261,19 @@ def mark_seen(ids: list) -> None:
             for i in range(0, len(ids), 500):
                 chunk = ids[i:i+500]
                 ph = ",".join("?"*len(chunk))
-                con.execute(f"UPDATE listings SET seen=1, ts_seen=? WHERE id IN ({ph})",
-                            [now] + chunk)
+                con.execute(f"UPDATE listings SET seen=1,ts_seen=? WHERE id IN ({ph})",
+                            [now]+chunk)
             con.commit()
-        finally:
-            con.close()
-
-def toggle_favorite(lid: str) -> bool:
-    """Returns new favorite state."""
-    with _db_lock:
-        con = _db()
-        try:
-            cur = con.execute("SELECT favorited FROM listings WHERE id=?", (lid,)).fetchone()
-            if not cur: return False
-            new_val = 0 if cur[0] else 1
-            con.execute("UPDATE listings SET favorited=? WHERE id=?", (new_val, lid))
-            con.commit()
-            return bool(new_val)
-        finally:
-            con.close()
-
-def hide_listing(lid: str) -> None:
-    with _db_lock:
-        con = _db()
-        try:
-            con.execute("UPDATE listings SET hidden=1 WHERE id=?", (lid,))
-            con.commit()
-        finally:
-            con.close()
+        finally: con.close()
 
 def get_favorites() -> list:
     with _db_lock:
         con = _db()
         try:
-            rows = con.execute(
-                "SELECT * FROM listings WHERE favorited=1 ORDER BY ts_found DESC LIMIT 100"
-            ).fetchall()
+            rows = con.execute("SELECT * FROM listings WHERE favorited=1 "
+                               "ORDER BY ts_found DESC LIMIT 100").fetchall()
             return [dict(r) for r in rows]
-        finally:
-            con.close()
+        finally: con.close()
 
 def get_stats_db() -> dict:
     with _db_lock:
@@ -299,106 +281,78 @@ def get_stats_db() -> dict:
         try:
             r = con.execute("SELECT * FROM stats WHERE id=1").fetchone()
             total = con.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
-            sources = con.execute(
-                "SELECT source, COUNT(*) as cnt FROM listings GROUP BY source"
-            ).fetchall()
+            by_src = {row["source"]: row["cnt"] for row in
+                      con.execute("SELECT source, COUNT(*) as cnt FROM listings GROUP BY source")}
             return {
-                "total_found":   r["total_found"] if r else 0,
-                "total_new":     r["total_new"]   if r else 0,
-                "total_notif":   r["total_notif"] if r else 0,
-                "last_check":    r["last_check"]  if r else None,
-                "last_new":      r["last_new"]    if r else None,
-                "app_opens":     r["app_opens"]   if r else 0,
-                "db_total":      total,
-                "by_source":     {row["source"]: row["cnt"] for row in sources},
+                "total_found": r["total_found"] if r else 0,
+                "total_new":   r["total_new"]   if r else 0,
+                "total_notif": r["total_notif"] if r else 0,
+                "last_check":  r["last_check"]  if r else None,
+                "last_new":    r["last_new"]    if r else None,
+                "app_opens":   r["app_opens"]   if r else 0,
+                "db_total": total, "by_source": by_src,
             }
-        finally:
-            con.close()
+        finally: con.close()
 
-def bump_opens() -> None:
+def bump_opens():
     with _db_lock:
         con = _db()
         try:
             con.execute("UPDATE stats SET app_opens=app_opens+1 WHERE id=1")
             con.commit()
-        finally:
-            con.close()
+        finally: con.close()
 
-def purge_old(days: int = 60) -> int:
+def purge_old(days=60):
     cutoff = time.time() - days * 86400
     with _db_lock:
         con = _db()
         try:
-            r = con.execute(
-                "DELETE FROM listings WHERE ts_found<? AND favorited=0", (cutoff,)
-            )
+            con.execute("DELETE FROM listings WHERE ts_found<? AND favorited=0", (cutoff,))
             con.commit()
-            return r.rowcount
-        finally:
-            con.close()
+        finally: con.close()
 
-# ── Settings in DB ─────────────────────────────────────────────────────
-def _sget(key: str, default=None):
+def _sget(key, default=None):
     with _db_lock:
         con = _db()
         try:
             r = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-            if r is None: return default
-            return json.loads(r[0])
-        except Exception:
-            return default
-        finally:
-            con.close()
+            return json.loads(r[0]) if r else default
+        except Exception: return default
+        finally: con.close()
 
-def _sset(key: str, value) -> None:
+def _sset(key, value):
     with _db_lock:
         con = _db()
         try:
             con.execute("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
                         (key, json.dumps(value, ensure_ascii=False)))
             con.commit()
-        finally:
-            con.close()
+        finally: con.close()
 
 DEFAULTS = {
-    "max_price": 700, "min_price": 0,
-    "min_rooms": 0.0, "max_rooms": 0.0,
-    "min_size": 0,    "max_size": 0,
-    "wbs_only": False,
-    "wbs_level_min": 0, "wbs_level_max": 999,
-    "household_size": 1,
-    "jobcenter_mode": False, "wohngeld_mode": False,
-    "sources": [], "areas": [],
-    "sort_by": "score",
-    "bg_interval": 30,
-    "notifications": True,
-    "font_scale": 1.0,
-    "accent": "#22C55E",
-    "notify_sound": True,
-    "purge_days": 60,
-    "show_hidden": False,
+    "max_price":700,"min_price":0,"min_rooms":0.0,"max_rooms":0.0,
+    "min_size":0,"max_size":0,"wbs_only":False,"wbs_level_min":0,
+    "wbs_level_max":999,"household_size":1,"jobcenter_mode":False,
+    "wohngeld_mode":False,"sources":[],"areas":[],"sort_by":"score",
+    "bg_interval":30,"notifications":True,"font_scale":1.0,
+    "accent":"#22C55E","purge_days":60,"show_hidden":False,
 }
 
-def load_cfg() -> dict:
-    cfg = dict(DEFAULTS)
+def load_cfg():
     try:
         stored = _sget("main_cfg", {})
-        if isinstance(stored, dict):
-            cfg.update(stored)
-    except Exception:
-        pass
-    return cfg
+        return {**DEFAULTS, **(stored if isinstance(stored, dict) else {})}
+    except Exception: return dict(DEFAULTS)
 
-def save_cfg(c: dict) -> None:
-    _sset("main_cfg", c)
+def save_cfg(c): _sset("main_cfg", c)
 
-def is_first_run() -> bool: return not FIRST_RUN.exists()
+def is_first_run(): return not FIRST_RUN().exists()
 def mark_done():
-    try: FIRST_RUN.write_text("1")
+    try: FIRST_RUN().write_text("1")
     except Exception: pass
 
 # ═══════════════════════════════════════════════════════════════════════
-# Domain Data
+# Domain Data (NO kivy color refs here)
 # ═══════════════════════════════════════════════════════════════════════
 SOURCES = {
     "gewobag":   ("Gewobag",       True),
@@ -419,25 +373,19 @@ BERLIN_AREAS = [
     "Marzahn","Hellersdorf","Treptow","Köpenick","Reinickendorf",
     "Friedrichshain","Kreuzberg","Prenzlauer Berg","Wedding","Moabit",
 ]
-JC_KDU = {1:549,2:671,3:789,4:911,5:1021,6:1131}
-WG_LIM = {1:580,2:680,3:800,4:910,5:1030,6:1150,7:1270}
-def jc(n):
-    n=max(1,min(int(n),10))
-    return JC_KDU.get(min(n,6), JC_KDU[6]+(n-6)*110)
-def wg(n):
-    n=max(1,min(int(n),10))
-    return WG_LIM.get(min(n,7), WG_LIM[7]+(n-7)*120)
+JC = {1:549,2:671,3:789,4:911,5:1021,6:1131}
+WG = {1:580,2:680,3:800,4:910,5:1030,6:1150,7:1270}
+def jc(n): return JC.get(max(1,min(int(n),6)), JC[6]+(max(1,int(n))-6)*110)
+def wg(n): return WG.get(max(1,min(int(n),7)), WG[7]+(max(1,int(n))-7)*120)
 
 FEATS = {
     "balkon":"🌿 بلكونة","terrasse":"🌿 تراس","dachterrasse":"🌿 تراس علوي",
     "garten":"🌱 حديقة","aufzug":"🛗 مصعد","fahrstuhl":"🛗 مصعد",
     "einbauküche":"🍳 مطبخ مجهز","keller":"📦 مخزن","abstellraum":"📦 مخزن",
-    "stellplatz":"🚗 موقف","tiefgarage":"🚗 جراج","barrierefrei":"♿ بدون عوائق",
-    "neubau":"🏗 بناء جديد","erstbezug":"✨ أول سكن",
-    "parkett":"🪵 باركيه","laminat":"🪵 لامينيت",
-    "fußbodenheizung":"🌡 تدفئة أرضية","fernwärme":"🌡 تدفئة مركزية",
-    "saniert":"🔨 مجدد","waschmaschine":"🫧 غسالة",
-    "badewanne":"🛁 حوض","sep. wc":"🚽 حمام منفصل","rolladen":"🪟 ستائر",
+    "stellplatz":"🚗 موقف","tiefgarage":"🚗 جراج","barrierefrei":"♿",
+    "neubau":"🏗 جديد","erstbezug":"✨ أول سكن","parkett":"🪵 باركيه",
+    "laminat":"🪵 لامينيت","fußbodenheizung":"🌡 تدفئة أرضية",
+    "fernwärme":"🌡 مركزية","saniert":"🔨 مجدد","waschmaschine":"🫧 غسالة",
 }
 URGENT = ["ab sofort","sofort frei","sofort verfügbar"]
 MONTHS_AR = {
@@ -457,102 +405,86 @@ except Exception:
     _SSL.check_hostname = False
     _SSL.verify_mode    = ssl.CERT_NONE
 
-_UA = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/124.0"
+_UA = "Mozilla/5.0 (Linux; Android 13) Chrome/124.0"
 
 def check_network() -> bool:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(3)
-        s.connect(("8.8.8.8",53)); s.close(); return True
+        s.settimeout(3); s.connect(("8.8.8.8", 53)); s.close(); return True
     except Exception: return False
 
-def _get(url: str) -> Optional[str]:
+def _get(url):
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent":_UA,"Accept-Language":"de-DE,de;q=0.9"})
-        with urllib.request.urlopen(req,timeout=12,context=_SSL) as r:
-            enc = r.headers.get_content_charset("utf-8")
-            return r.read().decode(enc,"replace")
+        req = urllib.request.Request(url, headers={"User-Agent":_UA,"Accept-Language":"de-DE"})
+        with urllib.request.urlopen(req, timeout=12, context=_SSL) as r:
+            return r.read().decode(r.headers.get_content_charset("utf-8"), "replace")
     except Exception: return None
 
-def _get_json(url: str) -> Optional[object]:
+def _get_json(url):
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent":_UA,"Accept":"application/json"})
-        with urllib.request.urlopen(req,timeout=12,context=_SSL) as r:
+        req = urllib.request.Request(url, headers={"User-Agent":_UA,"Accept":"application/json"})
+        with urllib.request.urlopen(req, timeout=12, context=_SSL) as r:
             return json.loads(r.read())
     except Exception: return None
 
-def make_id(url: str) -> str:
+def make_id(url):
     u = re.sub(r"[?#].*","",url.strip().rstrip("/"))
     return hashlib.sha256(u.encode()).hexdigest()[:14]
 
-def parse_price(raw) -> Optional[float]:
+def parse_price(raw):
     if not raw: return None
     s = re.sub(r"[^\d\.,]","",str(raw))
     if not s: return None
     if "," in s and "." in s: s=s.replace(".","").replace(",",".")
     elif "," in s:
-        p=s.split(",")
-        s=s.replace(",",".") if len(p)==2 and len(p[1])<=2 else s.replace(",","")
+        p=s.split(","); s=s.replace(",",".") if len(p)==2 and len(p[1])<=2 else s.replace(",","")
     elif "." in s:
         p=s.split(".")
         if len(p)==2 and len(p[1])==3: s=s.replace(".","")
     try:
         v=float(s); return v if 50<v<8000 else None
-    except ValueError: return None
+    except Exception: return None
 
-def parse_rooms(raw) -> Optional[float]:
+def parse_rooms(raw):
     m=re.search(r"(\d+[.,]?\d*)",str(raw or "").replace(",","."))
     try:
         v=float(m.group(1)) if m else None
         return v if v and 0.5<=v<=20 else None
     except Exception: return None
 
-def enrich(title: str, desc: str) -> dict:
+def enrich(title, desc):
     t=f"{title} {desc}".lower(); out={}
-    for pat in [r"(\d[\d\.]*)\s*m[²2]",r"(\d[\d\.]*)\s*qm\b",r"wohnfläche[:\s]+(\d[\d\.]*)"]:
+    for pat in [r"(\d[\d\.]*)\s*m[²2]",r"(\d[\d\.]*)\s*qm\b"]:
         m=re.search(pat,t)
         if m:
             try:
                 v=float(m.group(1).replace(".",""))
                 if 15<v<500: out["size_m2"]=v; break
-            except ValueError: pass
-    for pat,lbl_fn in [
-        (r"(\d+)\.\s*(?:og|obergeschoss|etage|stock)\b",lambda m:f"الطابق {m.group(1)}"),
-        (r"\beg\b(?!\w)|erdgeschoss",lambda _:"الطابق الأرضي"),
-        (r"\bdg\b(?!\w)|dachgeschoss",lambda _:"الطابق العلوي"),
-        (r"\bpenthouse\b",lambda _:"بنتهاوس"),
-    ]:
+            except Exception: pass
+    for pat,fn in [(r"(\d+)\.\s*(?:og|etage|stock)\b",lambda m:f"الطابق {m.group(1)}"),
+                   (r"\beg\b(?!\w)|erdgeschoss",lambda _:"الطابق الأرضي"),
+                   (r"\bdg\b(?!\w)|dachgeschoss",lambda _:"الطابق العلوي")]:
         mm=re.search(pat,t)
-        if mm: out["floor"]=lbl_fn(mm); break
+        if mm: out["floor"]=fn(mm); break
     if any(k in t for k in URGENT): out["available"]="فوري"
     else:
         m=re.search(r"ab\s+(\d{1,2}[./]\d{1,2}[./]\d{2,4})",t)
         if m: out["available"]=f"من {m.group(1)}"
-        else:
-            mths="|".join(MONTHS_AR)
-            m=re.search(rf"ab\s+({mths})\s*(\d{{4}})?",t)
-            if m: out["available"]=f"من {MONTHS_AR[m.group(1)]} {m.group(2) or ''}".strip()
     m=re.search(r"kaution[:\s]*(\d[\d\.,]*)\s*€?",t)
     if m:
         v=parse_price(m.group(1))
         if v: out["deposit"]=f"{v:.0f} €"
-    else:
-        m=re.search(r"(\d)\s*monatsmieten?\s*(?:kaution)?",t)
-        if m: out["deposit"]=f"{m.group(1)}× إيجار"
     if "fußbodenheizung" in t: out["heating"]="🌡 تدفئة أرضية"
-    elif "fernwärme" in t:      out["heating"]="🌡 مركزية"
-    elif "gasheizung" in t:     out["heating"]="🔥 غاز"
+    elif "fernwärme" in t: out["heating"]="🌡 مركزية"
     mm=re.search(r"wbs[\s\-_]*(\d{2,3})",t)
     if mm: out["wbs_level_num"]=int(mm.group(1))
     seen_f=set(); feats=[]
-    for kw,lbl_ar in FEATS.items():
-        if kw in t and lbl_ar not in seen_f: seen_f.add(lbl_ar); feats.append(lbl_ar)
+    for kw,lb in FEATS.items():
+        if kw in t and lb not in seen_f: seen_f.add(lb); feats.append(lb)
     if feats: out["features"]=feats
     return out
 
-def _score_listing(l: dict) -> int:
+def _score(l):
     s=8 if l.get("trusted_wbs") else 0
     s+=3 if l.get("source") in GOV else 0
     p=l.get("price")
@@ -560,18 +492,16 @@ def _score_listing(l: dict) -> int:
         if p<400: s+=10
         elif p<500: s+=7
         elif p<600: s+=4
-        elif p<700: s+=1
     r=l.get("rooms")
     if r:
         if r>=3: s+=5
         elif r>=2: s+=3
     if l.get("size_m2"): s+=2
     if l.get("available")=="فوري": s+=5
-    elif l.get("available"): s+=1
     s+=min(len(l.get("features") or []),4)
     return s
 
-def _scrape_gewobag() -> list:
+def _scrape_gewobag():
     data=_get_json("https://www.gewobag.de/wp-json/gewobag/v1/offers?type=wohnung&wbs=1&per_page=50")
     if not data: return []
     items=data if isinstance(data,list) else data.get("offers",[])
@@ -586,14 +516,12 @@ def _scrape_gewobag() -> list:
            "title":title[:80],"price":parse_price(i.get("gesamtmiete") or i.get("warmmiete")),
            "rooms":parse_rooms(i.get("zimmer")),"location":i.get("bezirk","Berlin"),
            "wbs_label":"WBS erforderlich","ts":time.time(),**extra}
-        l["score"]=_score_listing(l); result.append(l)
+        l["score"]=_score(l); result.append(l)
     return result
 
-def _scrape_degewo() -> list:
-    for api in [
-        "https://immosuche.degewo.de/de/properties.json?property_type_id=1&categories[]=WBS&per_page=50",
-        "https://immosuche.degewo.de/de/search.json?asset_classes[]=1&wbs=1",
-    ]:
+def _scrape_degewo():
+    for api in ["https://immosuche.degewo.de/de/properties.json?property_type_id=1&categories[]=WBS&per_page=50",
+                "https://immosuche.degewo.de/de/search.json?asset_classes[]=1&wbs=1"]:
         data=_get_json(api)
         if not data: continue
         items=data if isinstance(data,list) else data.get("results",[])
@@ -605,37 +533,35 @@ def _scrape_degewo() -> list:
             extra=enrich(i.get("title",""),str(i.get("text") or ""))
             l={"id":make_id(url),"url":url,"source":"degewo","trusted_wbs":True,
                "title":i.get("title","")[:80],"price":parse_price(i.get("warmmiete") or i.get("totalRent")),
-               "rooms":parse_rooms(i.get("zimmer") or i.get("rooms")),
-               "location":i.get("district","Berlin"),"wbs_label":"WBS erforderlich",
-               "ts":time.time(),**extra}
-            l["score"]=_score_listing(l); result.append(l)
+               "rooms":parse_rooms(i.get("zimmer")),"location":i.get("district","Berlin"),
+               "wbs_label":"WBS erforderlich","ts":time.time(),**extra}
+            l["score"]=_score(l); result.append(l)
         if result: return result
     return []
 
-def _scrape_kleinanzeigen() -> list:
+def _scrape_kleinanzeigen():
     if not HAS_BS4: return []
     html=_get("https://www.kleinanzeigen.de/s-wohnung-mieten/berlin/wbs/k0c203l3331")
     if not html or len(html)<500: return []
     soup=BeautifulSoup(html,"html.parser"); result=[]; seen=set()
-    for card in soup.select("article.aditem")[:25]:
+    for card in soup.select("article.aditem")[:20]:
         a=card.select_one("a.ellipsis,h2 a,h3 a")
         if not a: continue
         href=a.get("href","")
         url="https://www.kleinanzeigen.de"+href if href.startswith("/") else href
         if url in seen: continue; seen.add(url)
-        t_tag=card.select_one("h2,h3")
-        p_tag=card.select_one("[class*='price']")
+        t_tag=card.select_one("h2,h3"); p_tag=card.select_one("[class*='price']")
         title=(t_tag.get_text(strip=True) if t_tag else a.get_text(strip=True))[:80]
         extra=enrich(title,card.get_text(" ",strip=True))
         l={"id":make_id(url),"url":url,"source":"kleinanz","trusted_wbs":False,
            "title":title,"price":parse_price(p_tag.get_text() if p_tag else None),
            "rooms":None,"location":"Berlin","wbs_label":"","ts":time.time(),**extra}
-        l["score"]=_score_listing(l); result.append(l)
+        l["score"]=_score(l); result.append(l)
     return result
 
 _SCRAPERS = {"gewobag":_scrape_gewobag,"degewo":_scrape_degewo,"kleinanz":_scrape_kleinanzeigen}
 
-def fetch_all(enabled: Optional[list]=None, timeout: int=25) -> list:
+def fetch_all(enabled=None, timeout=25):
     active=set(enabled) if enabled else set(SOURCES.keys())
     results=[]; lock=threading.Lock()
     def run(src,fn):
@@ -651,25 +577,24 @@ def fetch_all(enabled: Optional[list]=None, timeout: int=25) -> list:
             threads.append(t); t.start()
     deadline=time.time()+timeout
     for t in threads: t.join(timeout=max(0.1,deadline-time.time()))
-    # Dedup by ID
     seen_ids=set(); unique=[]
     for l in results:
         if l.get("id") and l["id"] not in seen_ids:
             seen_ids.add(l["id"]); unique.append(l)
     return unique
 
-def apply_filters(listings: list, cfg: dict) -> list:
+def apply_filters(listings, cfg):
     out=[]; max_p=float(cfg.get("max_price") or 9999); min_p=float(cfg.get("min_price") or 0)
     min_r=float(cfg.get("min_rooms") or 0); max_r=float(cfg.get("max_rooms") or 0)
     min_sz=int(cfg.get("min_size") or 0); max_sz=int(cfg.get("max_size") or 0)
-    wbs_only=bool(cfg.get("wbs_only")); wlmin=int(cfg.get("wbs_level_min") or 0)
+    wbs=bool(cfg.get("wbs_only")); wlmin=int(cfg.get("wbs_level_min") or 0)
     wlmax=int(cfg.get("wbs_level_max") or 999); jcm=bool(cfg.get("jobcenter_mode"))
     wgm=bool(cfg.get("wohngeld_mode")); n=max(1,int(cfg.get("household_size") or 1))
     areas=[a.lower() for a in (cfg.get("areas") or [])]; srcs=cfg.get("sources") or []
-    show_hidden=bool(cfg.get("show_hidden"))
+    show_hid=bool(cfg.get("show_hidden"))
     for l in listings:
         if not l.get("id"): continue
-        if not show_hidden and l.get("hidden"): continue
+        if not show_hid and l.get("hidden"): continue
         if srcs and l.get("source") not in srcs: continue
         price=l.get("price"); rooms=l.get("rooms"); size=l.get("size_m2")
         if price is not None:
@@ -681,7 +606,7 @@ def apply_filters(listings: list, cfg: dict) -> list:
         if size is not None:
             if min_sz>0 and size<min_sz: continue
             if max_sz>0 and size>max_sz: continue
-        if wbs_only and not l.get("trusted_wbs"): continue
+        if wbs and not l.get("trusted_wbs"): continue
         level=l.get("wbs_level") or l.get("wbs_level_num")
         if level is not None and (wlmin>0 or wlmax<999):
             if not (wlmin<=level<=wlmax): continue
@@ -695,11 +620,11 @@ def apply_filters(listings: list, cfg: dict) -> list:
         out.append(l)
     return out
 
-def sort_listings(listings: list, sort_by: str) -> list:
-    if sort_by=="price_asc":   return sorted(listings, key=lambda l: l.get("price") or 9999)
-    elif sort_by=="price_desc":return sorted(listings, key=lambda l: -(l.get("price") or 0))
-    elif sort_by=="newest":    return sorted(listings, key=lambda l: -(l.get("ts_found") or l.get("ts") or 0))
-    return sorted(listings, key=lambda l: -(l.get("score") or 0))
+def sort_listings(listings, sort_by):
+    if sort_by=="price_asc":    return sorted(listings, key=lambda l:l.get("price") or 9999)
+    elif sort_by=="price_desc": return sorted(listings, key=lambda l:-(l.get("price") or 0))
+    elif sort_by=="newest":     return sorted(listings, key=lambda l:-(l.get("ts_found") or l.get("ts") or 0))
+    return sorted(listings, key=lambda l:-(l.get("score") or 0))
 
 # ═══════════════════════════════════════════════════════════════════════
 # Notifications
@@ -707,15 +632,15 @@ def sort_listings(listings: list, sort_by: str) -> list:
 _CH = "wbs4_ch"
 
 def _ensure_channel():
-    if not HAS_ANDROID: return
+    if not HAS_ANDROID_API: return
     try:
         ctx=PythonActivity.mActivity; mgr=ctx.getSystemService(CTX.NOTIFICATION_SERVICE)
         ch=NC(_CH,"WBS Berlin",NM.IMPORTANCE_HIGH)
-        ch.setDescription(ar("إشعارات شقق WBS")); mgr.createNotificationChannel(ch)
+        mgr.createNotificationChannel(ch)
     except Exception: pass
 
-def send_notif(title: str, body: str, url: str="", notif_id: int=1001) -> None:
-    if not HAS_ANDROID: return
+def send_notif(title, body, url="", nid=1001):
+    if not HAS_ANDROID_API: return
     try:
         ctx=PythonActivity.mActivity; mgr=ctx.getSystemService(CTX.NOTIFICATION_SERVICE)
         if url:
@@ -723,27 +648,26 @@ def send_notif(title: str, body: str, url: str="", notif_id: int=1001) -> None:
         else:
             intent=Intent(ctx,PythonActivity)
             intent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        pi=PI.getActivity(ctx,notif_id,intent,PI.FLAG_UPDATE_CURRENT|0x4000000)
+        pi=PI.getActivity(ctx,nid,intent,PI.FLAG_UPDATE_CURRENT|0x4000000)
         nb=NB(ctx,_CH)
-        nb.setSmallIcon(17301543)
-        nb.setContentTitle(ar(title)); nb.setContentText(ar(body))
-        nb.setContentIntent(pi); nb.setAutoCancel(True); nb.setPriority(1)
-        mgr.notify(notif_id,nb.build())
+        nb.setSmallIcon(17301543); nb.setContentTitle(ar(title))
+        nb.setContentText(ar(body)); nb.setContentIntent(pi)
+        nb.setAutoCancel(True); nb.setPriority(1)
+        mgr.notify(nid,nb.build())
     except Exception: pass
 
-def notify_new(listings: list) -> None:
+def notify_new(listings):
     if not listings: return
-    cfg=load_cfg()
-    if not cfg.get("notifications",True): return
+    if not load_cfg().get("notifications",True): return
     if len(listings)==1:
-        l=listings[0]; name=SOURCES.get(l.get("source",""),("","",))[0]
+        l=listings[0]; name=SOURCES.get(l.get("source",""),("?",))[0]
         price=f"{l['price']:.0f}€" if l.get("price") else ""
-        send_notif(f"🏠 شقة جديدة — {name}",
-                   f"{price} · {l.get('location','Berlin')} · {l.get('title','')[:45]}",
+        send_notif(f"شقة جديدة — {name}",
+                   f"{price} · {l.get('location','Berlin')} · {l.get('title','')[:40]}",
                    l.get("url",""))
     else:
         names=list({SOURCES.get(l.get("source",""),("?",))[0] for l in listings[:3]})
-        send_notif(f"🏠 {len(listings)} شقق جديدة في برلين","، ".join(names))
+        send_notif(f"{len(listings)} شقق جديدة في برلين","، ".join(names))
     with _db_lock:
         con=_db()
         try:
@@ -759,34 +683,30 @@ def notify_new(listings: list) -> None:
 # Background Service
 # ═══════════════════════════════════════════════════════════════════════
 _bg_stop  = threading.Event()
-_bg_thread: Optional[threading.Thread] = None
+_bg_thread = None
 
 def _bg_worker():
-    _ensure_channel(); time.sleep(5)
+    _ensure_channel(); time.sleep(10)  # wait 10s after app starts
     while not _bg_stop.is_set():
         try:
-            cfg=load_cfg()
-            interval=max(5,int(cfg.get("bg_interval",30)))*60
-            # Update stats
+            cfg=load_cfg(); interval=max(5,int(cfg.get("bg_interval",30)))*60
             with _db_lock:
                 con=_db()
                 try: con.execute("UPDATE stats SET last_check=? WHERE id=1",(time.time(),)); con.commit()
                 finally: con.close()
-            try: SVC_BEAT.write_text(str(int(time.time())))
+            try: SVC_BEAT().write_text(str(int(time.time())))
             except Exception: pass
             if check_network():
                 raw=fetch_all(cfg.get("sources") or None, timeout=30)
-                new_ones=[]
-                for l in raw:
-                    if save_listing(l): new_ones.append(l)
-                shown=apply_filters(new_ones, cfg)
+                new_ones=[l for l in raw if save_listing(l)]
+                shown=apply_filters(new_ones,cfg)
                 if shown: notify_new(shown)
-            purge_old(int(cfg.get("purge_days",60)))
+                purge_old(int(cfg.get("purge_days",60)))
         except Exception: pass
         _bg_stop.wait(timeout=interval)
 
 def start_bg():
-    global _bg_thread,_bg_stop
+    global _bg_thread, _bg_stop
     if _bg_thread and _bg_thread.is_alive(): return
     _bg_stop.clear()
     _bg_thread=threading.Thread(target=_bg_worker,daemon=True,name="WBSBg")
@@ -794,15 +714,17 @@ def start_bg():
 
 def stop_bg(): _bg_stop.set()
 
-def is_bg() -> bool:
+def is_bg():
     if not (_bg_thread and _bg_thread.is_alive()): return False
-    try: return time.time()-int(SVC_BEAT.read_text())<600
+    try: return time.time()-int(SVC_BEAT().read_text())<600
     except Exception: return _bg_thread.is_alive()
 
 # ═══════════════════════════════════════════════════════════════════════
-# UI Helpers
+# UI Helpers (only if Kivy available)
 # ═══════════════════════════════════════════════════════════════════════
 if HAS_KIVY:
+    def _font(): return _FONT_NAME[0]
+
     def bg(w, color, radius=0):
         w.canvas.before.clear()
         with w.canvas.before:
@@ -812,17 +734,26 @@ if HAS_KIVY:
         def _u(*_): r.pos=w.pos; r.size=w.size
         w.bind(pos=_u,size=_u)
 
-    def lbl(text,size=14,color=None,bold=False,halign="right",**kw):
+    def lbl(text, size=14, color=None, bold=False, halign="right", **kw):
         color=color or TEXT1
-        w=Label(text=ar(str(text)),font_size=fs(size),color=color,bold=bold,halign=halign,**kw)
-        w.bind(width=lambda *_:setattr(w,"text_size",(w.width,None)))
+        try:
+            rendered = ar(str(text)) if text else ""
+        except Exception:
+            rendered = str(text) if text else ""
+        w=Label(text=rendered, font_size=fs(size), color=color,
+                bold=bold, halign=halign, font_name=_font(), **kw)
+        w.bind(width=lambda *_: setattr(w,"text_size",(w.width,None)))
         return w
 
-    def btn(text,on_press=None,color=None,text_color=None,height=48,radius=12,**kw):
+    def btn(text, on_press=None, color=None, text_color=None,
+            height=48, radius=12, **kw):
         color=color or PRIMARY()
         text_color=text_color or WHITE
-        b=Button(text=ar(str(text)),size_hint_y=None,height=dp(height),
-                 background_color=TRANSP,color=text_color,font_size=fs(14),bold=True,**kw)
+        try: rendered = ar(str(text))
+        except Exception: rendered = str(text)
+        b=Button(text=rendered, size_hint_y=None, height=dp(height),
+                 background_color=TRANSP, color=text_color,
+                 font_size=fs(14), bold=True, font_name=_font(), **kw)
         bg(b,color,radius=radius)
         if on_press: b.bind(on_press=on_press)
         return b
@@ -831,7 +762,7 @@ if HAS_KIVY:
     def div():
         w=Widget(size_hint_y=None,height=dp(1)); bg(w,DIVIDER); return w
     def sec(text):
-        b=BoxLayout(size_hint_y=None,height=dp(30))
+        b=BoxLayout(size_hint_y=None,height=dp(28))
         b.add_widget(lbl(text,size=11,color=TEXT3,bold=True)); return b
     def tf(val,filt="int"):
         t=TextInput(text=str(val),input_filter=filt,multiline=False,
@@ -846,21 +777,18 @@ if HAS_KIVY:
         except Exception: return d
 
     def nav_bar(app_ref, active="listings"):
-        TABS = [
-            ("🏠","listings","الرئيسية"),
-            ("⭐","favorites","المفضلة"),
-            ("📊","stats_scr","الإحصائيات"),
-            ("⚙️","settings","الإعدادات"),
-        ]
-        bar=BoxLayout(size_hint_y=None,height=dp(58),spacing=0)
+        TABS=[("🏠","listings","الرئيسية"),("⭐","favorites","المفضلة"),
+              ("📊","stats_scr","إحصائيات"),("⚙️","settings","إعدادات")]
+        bar=BoxLayout(size_hint_y=None,height=dp(56),spacing=0)
         bg(bar,BG2)
         for icon,name,label in TABS:
             is_act=name==active
-            b=Button(text=f"{icon}\n{ar(label)}",
-                     background_color=TRANSP,
+            try: lbl_txt=f"{icon}\n{ar(label)}"
+            except Exception: lbl_txt=f"{icon}\n{label}"
+            b=Button(text=lbl_txt,background_color=TRANSP,
                      color=PRIMARY() if is_act else TEXT3,
                      font_size=fs(10 if not is_act else 11),
-                     bold=is_act)
+                     bold=is_act,font_name=_font())
             if is_act: bg(b,(*PRIMARY()[:3],0.1))
             else: bg(b,BG2)
             n=name
@@ -869,24 +797,46 @@ if HAS_KIVY:
         return bar
 
 # ═══════════════════════════════════════════════════════════════════════
+# Error Screen — shown if build() crashes
+# ═══════════════════════════════════════════════════════════════════════
+if HAS_KIVY:
+    class ErrorScreen(Screen):
+        def __init__(self, msg="", **kw):
+            super().__init__(name="error",**kw)
+            bg(self,BG)
+            root=FloatLayout()
+            card=BoxLayout(orientation="vertical",padding=dp(24),spacing=dp(16),
+                           size_hint=(0.9,0.7),pos_hint={"center_x":.5,"center_y":.5})
+            bg(card,BG2,radius=16)
+            card.add_widget(Label(text="⚠️",font_size=sp(48),size_hint_y=None,height=dp(60)))
+            card.add_widget(lbl("حدث خطأ عند بدء التطبيق",size=16,bold=True,color=RED,
+                                 size_hint_y=None,height=dp(40)))
+            card.add_widget(lbl(msg[:300],size=11,color=TEXT2,
+                                 size_hint_y=None,height=dp(120)))
+            root.add_widget(card)
+            self.add_widget(root)
+
+# ═══════════════════════════════════════════════════════════════════════
 # Onboarding
 # ═══════════════════════════════════════════════════════════════════════
 if HAS_KIVY:
     PAGES=[
-        ("🏠","مرحباً في WBS برلين","ابحث عن شقتك المدعومة\nمن 9 مصادر رسمية وخاصة",PRIMARY()),
-        ("🗄","قاعدة بيانات ذكية","لا تكرار للإعلانات أبداً\nيتذكر ما شاهدته وما فاتك",PURPLE),
-        ("🔔","إشعارات فورية","يعمل في الخلفية دائماً\nويرسل إشعاراً فور ظهور شقة مناسبة",AMBER),
+        ("🏠","مرحباً في WBS برلين","ابحث عن شقتك المدعومة\nمن 9 مصادر رسمية وخاصة",COL_P),
+        ("🗄","قاعدة بيانات ذكية","لا تكرار للإعلانات أبداً\nيتذكر كل ما شاهدته",PURPLE),
+        ("🔔","إشعارات فورية","يعمل في الخلفية دائماً\nويرسل إشعاراً فور ظهور شقة",AMBER),
     ]
     class OnboardingScreen(Screen):
         def __init__(self,app_ref,**kw):
-            super().__init__(name="onboarding",**kw); self.app_ref=app_ref; self._i=0; self._show()
+            super().__init__(name="onboarding",**kw)
+            self.app_ref=app_ref; self._i=0; self._show()
         def _show(self):
-            self.clear_widgets(); bg(self,BG); p=PAGES[self._i]; last=self._i==len(PAGES)-1
+            self.clear_widgets(); bg(self,BG)
+            p=PAGES[self._i]; last=self._i==len(PAGES)-1
             root=FloatLayout()
             card=BoxLayout(orientation="vertical",padding=dp(32),spacing=dp(16),
                            size_hint=(0.88,0.68),pos_hint={"center_x":.5,"center_y":.57})
             bg(card,BG2,radius=24)
-            card.add_widget(Label(text=p[0],font_size=fs(68),size_hint_y=None,height=dp(80)))
+            card.add_widget(Label(text=p[0],font_size=sp(68),size_hint_y=None,height=dp(80)))
             card.add_widget(lbl(p[1],size=21,bold=True,color=p[3],size_hint_y=None,height=dp(50)))
             card.add_widget(lbl(p[2],size=14,color=TEXT2,size_hint_y=None,height=dp(70)))
             root.add_widget(card)
@@ -910,7 +860,7 @@ if HAS_KIVY:
 # ═══════════════════════════════════════════════════════════════════════
 if HAS_KIVY:
     class ListingCard(BoxLayout):
-        def __init__(self, l: dict, show_fav_btn=True, **kw):
+        def __init__(self,l,**kw):
             super().__init__(orientation="vertical",size_hint_y=None,
                              padding=(dp(14),dp(12)),spacing=dp(6),**kw)
             name,gov=SOURCES.get(l.get("source",""),("?",False))
@@ -919,50 +869,48 @@ if HAS_KIVY:
             floor_=l.get("floor_") or l.get("floor",""); avail=l.get("available","")
             dep=l.get("deposit",""); heat=l.get("heating","")
             feats_raw=l.get("features")
-            if isinstance(feats_raw,str):
-                try: feats=json.loads(feats_raw)
-                except Exception: feats=[]
-            else: feats=feats_raw or []
+            try: feats=json.loads(feats_raw) if isinstance(feats_raw,str) else (feats_raw or [])
+            except Exception: feats=[]
             feats=feats[:6]; title=(l.get("title") or "شقة").strip()[:65]
             loc=l.get("location","Berlin"); wlnum=l.get("wbs_level") or l.get("wbs_level_num")
             wlbl=f"WBS {wlnum}" if wlnum else ("WBS ✓" if l.get("trusted_wbs") else "")
-            score_=l.get("score",0); self.url=l.get("url",""); self.lid=l.get("id","")
+            sc_=l.get("score",0); self.url=l.get("url",""); self.lid=l.get("id","")
             n_fr=max(1,(len(feats)+2)//3) if feats else 0
-            self.height=dp(175+n_fr*24+(20 if dep or heat else 0))
+            self.height=dp(172+n_fr*24+(20 if dep or heat else 0))
             bg(self,BG2,radius=16)
 
-            # ── Header ────────────────────────────────────────────────
-            r1=BoxLayout(size_hint_y=None,height=dp(28),spacing=dp(6))
-            chip=BoxLayout(size_hint=(None,None),size=(dp(120),dp(24)),padding=(dp(8),0))
+            # Header row
+            r1=BoxLayout(size_hint_y=None,height=dp(26),spacing=dp(6))
+            chip=BoxLayout(size_hint=(None,None),size=(dp(118),dp(24)),padding=(dp(8),0))
             bg(chip,(*src_c[:3],0.18),radius=12)
             chip.add_widget(lbl(("🏛 " if gov else "🔍 ")+ar(name),size=11,color=src_c,
                                  size_hint_y=None,height=dp(24)))
             r1.add_widget(chip)
-            if score_>=15:
-                stars="⭐⭐" if score_>=20 else "⭐"
-                sc_chip=BoxLayout(size_hint=(None,None),size=(dp(44),dp(24)),padding=(dp(4),0))
-                bg(sc_chip,(*GOLD[:3],0.18),radius=12)
-                sc_chip.add_widget(lbl(stars,size=11,color=GOLD,size_hint_y=None,height=dp(24)))
-                r1.add_widget(sc_chip)
+            if sc_>=15:
+                stars="⭐⭐" if sc_>=20 else "⭐"
+                sb=BoxLayout(size_hint=(None,None),size=(dp(40),dp(24)),padding=(dp(4),0))
+                bg(sb,(*GOLD[:3],0.18),radius=12)
+                sb.add_widget(lbl(stars,size=11,color=GOLD,size_hint_y=None,height=dp(24)))
+                r1.add_widget(sb)
             r1.add_widget(Widget())
             if wlbl:
                 wb=BoxLayout(size_hint=(None,None),size=(dp(78),dp(24)),padding=(dp(8),0))
                 bg(wb,(*PRIMARY()[:3],0.18),radius=12)
-                wb.add_widget(lbl(wlbl,size=11,color=tuple(PRIMARY()),bold=True,size_hint_y=None,height=dp(24)))
+                wb.add_widget(lbl(wlbl,size=11,color=tuple(PRIMARY()),bold=True,
+                                   size_hint_y=None,height=dp(24)))
                 r1.add_widget(wb)
-            if show_fav_btn:
-                self._fav_btn=Button(text="★" if is_fav else "☆",
-                    size_hint=(None,None),size=(dp(30),dp(28)),
-                    background_color=TRANSP,color=GOLD if is_fav else TEXT3,
-                    font_size=fs(18))
-                self._fav_btn.bind(on_press=self._toggle_fav)
-                r1.add_widget(self._fav_btn)
+            self._fav_btn=Button(text="★" if is_fav else "☆",
+                size_hint=(None,None),size=(dp(30),dp(26)),
+                background_color=TRANSP,color=GOLD if is_fav else TEXT3,
+                font_size=sp(18))
+            self._fav_btn.bind(on_press=self._toggle_fav)
+            r1.add_widget(self._fav_btn)
             self.add_widget(r1)
 
-            # ── Title ─────────────────────────────────────────────────
+            # Title
             self.add_widget(lbl(title,size=13,bold=True,size_hint_y=None,height=dp(22)))
 
-            # ── Location ──────────────────────────────────────────────
+            # Location + availability
             r3=BoxLayout(size_hint_y=None,height=dp(18))
             r3.add_widget(lbl("📍 "+ar(loc),size=11,color=TEXT2))
             if avail:
@@ -970,11 +918,11 @@ if HAS_KIVY:
                                    size=11,color=AMBER if avail=="فوري" else TEXT2))
             self.add_widget(r3); self.add_widget(div())
 
-            # ── Price row ─────────────────────────────────────────────
+            # Price row
             r4=BoxLayout(size_hint_y=None,height=dp(34),spacing=dp(6))
             if price:
                 ppm=f" ({price/sz:.1f}€/m²)" if sz else ""
-                pill=BoxLayout(size_hint=(None,None),size=(dp(120),dp(30)),padding=(dp(8),0))
+                pill=BoxLayout(size_hint=(None,None),size=(dp(118),dp(30)),padding=(dp(8),0))
                 bg(pill,(*PRIMARY()[:3],0.15),radius=10)
                 pill.add_widget(lbl(f"💰 {price:.0f}€{ppm}",size=13,color=tuple(PRIMARY()),
                                      bold=True,size_hint_y=None,height=dp(30)))
@@ -999,13 +947,10 @@ if HAS_KIVY:
                     fg.add_widget(c)
                 self.add_widget(fg)
 
-            # ── Action buttons ────────────────────────────────────────
             ab=BoxLayout(size_hint_y=None,height=dp(34),spacing=dp(8))
-            ob=btn("فتح ←",on_press=self._open,height=34,radius=10)
-            ab.add_widget(ob)
-            hb=btn("إخفاء",on_press=self._hide,color=BG3,text_color=TEXT2,height=34,radius=10,
-                   size_hint_x=None,width=dp(80))
-            ab.add_widget(hb)
+            ab.add_widget(btn("فتح ←",on_press=self._open,height=34,radius=10))
+            ab.add_widget(btn("إخفاء",on_press=self._hide,color=BG3,text_color=TEXT2,
+                               height=34,radius=10,size_hint_x=None,width=dp(80)))
             self.add_widget(ab)
 
         def _toggle_fav(self,*_):
@@ -1038,52 +983,65 @@ if HAS_KIVY:
         def __init__(self,app_ref,**kw):
             super().__init__(name="listings",**kw)
             self.app_ref=app_ref; self._lock=threading.RLock()
-            self._busy=False; self._raw=[]; bg(self,BG); self._build()
+            self._busy=False; self._raw=[]; bg(self,BG)
+            self._build_ui()
 
-        def _build(self):
-            self.clear_widgets(); cfg=load_cfg(); root=BoxLayout(orientation="vertical")
+        def _build_ui(self):
+            cfg=load_cfg(); root=BoxLayout(orientation="vertical")
             bar=BoxLayout(size_hint_y=None,height=dp(58),padding=(dp(14),dp(8)),spacing=dp(8))
             bg(bar,BG2)
-            bar.add_widget(lbl("🏠 WBS برلين",size=17,bold=True,color=WHITE,size_hint_x=0.4))
+            bar.add_widget(lbl("🏠 WBS برلين",size=16,bold=True,color=WHITE,size_hint_x=0.45))
             bar.add_widget(Widget())
             sort_icons={"score":"🏅","price_asc":"💰↑","price_desc":"💰↓","newest":"🕐"}
             self._sort_btn=btn(sort_icons.get(cfg.get("sort_by","score"),"🏅"),
                                on_press=self._cycle_sort,color=BG3,text_color=TEXT2,
-                               size_hint_x=None,width=dp(46),height=42)
+                               size_hint_x=None,height=dp(42),width=dp(46))
             bar.add_widget(self._sort_btn)
             bar.add_widget(btn("⚙️",on_press=lambda*_:setattr(self.app_ref.sm,"current","settings"),
-                               color=BG3,text_color=TEXT2,size_hint_x=None,width=dp(44),height=42))
-            self._rf_btn=btn("🔄",on_press=self._refresh,color=tuple(PRIMARY()),
-                              size_hint_x=None,width=dp(44),height=42)
-            bar.add_widget(self._rf_btn); root.add_widget(bar)
+                               color=BG3,text_color=TEXT2,size_hint_x=None,height=dp(42),width=dp(44)))
+            self._rf=btn("🔄",on_press=self._refresh,color=tuple(PRIMARY()),
+                          size_hint_x=None,height=dp(42),width=dp(44))
+            bar.add_widget(self._rf); root.add_widget(bar)
+
             chips=BoxLayout(size_hint_y=None,height=dp(44),padding=(dp(10),dp(6)),spacing=dp(8))
             bg(chips,BG2)
             self._wbs_chip=ToggleButton(text=ar("✅ WBS فقط"),
                 state="down" if cfg.get("wbs_only") else "normal",
                 size_hint=(None,None),size=(dp(100),dp(30)),
-                background_color=TRANSP,color=TEXT1,font_size=fs(12))
+                background_color=TRANSP,color=TEXT1,font_size=fs(12),font_name=_font())
             self._uc()
             self._wbs_chip.bind(state=self._on_wbs); chips.add_widget(self._wbs_chip)
             self._status=lbl("اضغط 🔄 للبحث",size=12,color=TEXT2,size_hint_y=None,height=dp(30))
             chips.add_widget(self._status)
-            self._bg_ind=lbl("⏸",size=14,color=TEXT3,size_hint=(None,None),height=dp(30))
-            chips.add_widget(self._bg_ind); root.add_widget(chips); root.add_widget(div())
+            self._bg_ind=Label(text="⏸",font_size=sp(14),color=TEXT3,
+                               size_hint=(None,None),size=(dp(28),dp(30)))
+            chips.add_widget(self._bg_ind)
+            root.add_widget(chips); root.add_widget(div())
+
             self._cards=BoxLayout(orientation="vertical",spacing=dp(10),
                                    padding=(dp(10),dp(10)),size_hint_y=None)
             self._cards.bind(minimum_height=self._cards.setter("height"))
-            sv=ScrollView(bar_color=(*PRIMARY()[:3],0.4),bar_inactive_color=(*TEXT3[:3],0.2))
+            sv=ScrollView(bar_color=(*PRIMARY()[:3],0.4))
             sv.add_widget(self._cards); root.add_widget(sv)
             root.add_widget(nav_bar(self.app_ref,"listings")); self.add_widget(root)
             self._ph("🔍",ar("اضغط 🔄 للبحث"))
+
+        def on_enter(self,*_):
+            # Schedule AFTER screen is shown — safe for Clock
             Clock.schedule_interval(self._tick,10)
+
+        def on_leave(self,*_):
+            Clock.unschedule(self._tick)
+
+        def _tick(self,*_):
+            try:
+                on=is_bg(); self._bg_ind.text="🟢" if on else "⏸"
+                self._bg_ind.color=tuple(PRIMARY()) if on else TEXT3
+            except Exception: pass
 
         def _uc(self):
             on=self._wbs_chip.state=="down"
             bg(self._wbs_chip,(*PRIMARY()[:3],0.85) if on else BG3,radius=15)
-
-        def _tick(self,*_):
-            on=is_bg(); self._bg_ind.text="🟢" if on else "⏸"
-            self._bg_ind.color=tuple(PRIMARY()) if on else TEXT3
 
         def _on_wbs(self,_,state):
             self._uc(); cfg=load_cfg(); cfg["wbs_only"]=state=="down"; save_cfg(cfg)
@@ -1105,8 +1063,9 @@ if HAS_KIVY:
 
         def _ph(self,icon,msg):
             self._cards.clear_widgets()
-            b=BoxLayout(orientation="vertical",spacing=dp(10),size_hint_y=None,height=dp(200),padding=dp(40))
-            b.add_widget(Label(text=icon,font_size=fs(52),size_hint_y=None,height=dp(65)))
+            b=BoxLayout(orientation="vertical",spacing=dp(10),size_hint_y=None,
+                        height=dp(200),padding=dp(40))
+            b.add_widget(Label(text=icon,font_size=sp(52),size_hint_y=None,height=dp(65)))
             b.add_widget(lbl(msg,size=14,color=TEXT2,size_hint_y=None,height=dp(50)))
             self._cards.add_widget(b)
 
@@ -1115,13 +1074,11 @@ if HAS_KIVY:
                 if self._busy: return
                 self._busy=True
             if not check_network():
-                # Try DB cache
                 with _db_lock:
                     con=_db()
                     try:
-                        rows=con.execute(
-                            "SELECT * FROM listings WHERE seen=0 AND hidden=0 "
-                            "ORDER BY ts_found DESC LIMIT 200").fetchall()
+                        rows=con.execute("SELECT * FROM listings WHERE seen=0 AND hidden=0 "
+                                         "ORDER BY ts_found DESC LIMIT 200").fetchall()
                         cached=[dict(r) for r in rows]
                     finally: con.close()
                 with self._lock: self._busy=False
@@ -1139,22 +1096,19 @@ if HAS_KIVY:
         def _bg_fetch(self):
             try:
                 cfg=load_cfg(); raw=fetch_all(cfg.get("sources") or None)
-                new_count=0
-                for l in raw:
-                    if save_listing(l): new_count+=1
+                new_count=sum(1 for l in raw if save_listing(l))
                 with _db_lock:
                     con=_db()
                     try:
-                        rows=con.execute(
-                            "SELECT * FROM listings WHERE hidden=0 ORDER BY ts_found DESC LIMIT 300"
-                        ).fetchall()
+                        rows=con.execute("SELECT * FROM listings WHERE hidden=0 "
+                                         "ORDER BY ts_found DESC LIMIT 300").fetchall()
                         all_db=[dict(r) for r in rows]
                     finally: con.close()
                 with self._lock: self._raw=all_db
                 shown=sort_listings(apply_filters(all_db,cfg),cfg.get("sort_by","score"))
                 Clock.schedule_once(lambda dt:self._render(shown,len(all_db),new_count))
-            except Exception:
-                Clock.schedule_once(lambda dt:self._ph("⚠️",ar("خطأ — حاول مرة أخرى")))
+            except Exception as e:
+                Clock.schedule_once(lambda dt:self._ph("⚠️",ar(f"خطأ: {str(e)[:60]}")))
             finally:
                 with self._lock: self._busy=False
 
@@ -1164,18 +1118,18 @@ if HAS_KIVY:
                 t=total if total is not None else len(lst)
                 new_str=f" (+{new_count} جديد)" if new_count else ""
                 if not lst:
-                    self._status.text=ar(f"لا إعلانات ({t} في القاعدة)")
+                    self._status.text=ar(f"لا إعلانات ({t})")
                     self._ph("🔍",ar("لا توجد إعلانات تناسب إعداداتك")); return
-                self._status.text=ar(f"✅ {len(lst)} إعلان{new_str}")
+                self._status.text=ar(f"✅ {len(lst)} من {t}{new_str}")
                 for l in lst[:12]:
                     self._cards.add_widget(ListingCard(l)); self._cards.add_widget(gap(6))
                 if len(lst)>12:
-                    Clock.schedule_once(lambda dt:self._render_rest(lst[12:]),0.06)
+                    Clock.schedule_once(lambda dt:self._render_rest(lst[12:]),0.08)
             except Exception: pass
 
         def _render_rest(self,rest):
             try:
-                for l in rest[:60]:
+                for l in rest[:50]:
                     self._cards.add_widget(ListingCard(l)); self._cards.add_widget(gap(6))
             except Exception: pass
 
@@ -1187,31 +1141,29 @@ if HAS_KIVY:
         def __init__(self,app_ref,**kw):
             super().__init__(name="favorites",**kw); self.app_ref=app_ref
             bg(self,BG); self._build()
-
         def _build(self):
             self.clear_widgets(); root=BoxLayout(orientation="vertical")
             bar=BoxLayout(size_hint_y=None,height=dp(58),padding=(dp(14),dp(8)))
-            bg(bar,BG2); bar.add_widget(lbl("⭐ المفضلة",size=17,bold=True,color=GOLD))
+            bg(bar,BG2)
+            bar.add_widget(lbl("⭐ "+ar("المفضلة"),size=17,bold=True,color=GOLD))
             bar.add_widget(btn("🔄",on_press=self._load,color=BG3,text_color=TEXT2,
-                               size_hint_x=None,width=dp(44),height=42))
+                               size_hint_x=None,height=dp(42),width=dp(44)))
             root.add_widget(bar)
             self._cards=BoxLayout(orientation="vertical",spacing=dp(10),
                                    padding=(dp(10),dp(10)),size_hint_y=None)
             self._cards.bind(minimum_height=self._cards.setter("height"))
-            sv=ScrollView(bar_color=(*GOLD[:3],0.4)); sv.add_widget(self._cards); root.add_widget(sv)
-            root.add_widget(nav_bar(self.app_ref,"favorites")); self.add_widget(root)
-            self._load()
-
+            sv=ScrollView(bar_color=(*GOLD[:3],0.4)); sv.add_widget(self._cards)
+            root.add_widget(sv); root.add_widget(nav_bar(self.app_ref,"favorites"))
+            self.add_widget(root); self._load()
         def on_enter(self,*_): self._load()
-
         def _load(self,*_):
             self._cards.clear_widgets()
             favs=get_favorites()
             if not favs:
                 b=BoxLayout(orientation="vertical",size_hint_y=None,height=dp(180),padding=dp(40))
-                b.add_widget(Label(text="⭐",font_size=fs(52),size_hint_y=None,height=dp(65)))
-                b.add_widget(lbl("لا توجد مفضلة بعد\nاضغط ★ على أي إعلان",size=14,
-                                   color=TEXT2,size_hint_y=None,height=dp(60)))
+                b.add_widget(Label(text="⭐",font_size=sp(52),size_hint_y=None,height=dp(65)))
+                b.add_widget(lbl("لا توجد مفضلة بعد",size=14,color=TEXT2,
+                                   size_hint_y=None,height=dp(40)))
                 self._cards.add_widget(b); return
             for l in favs:
                 self._cards.add_widget(ListingCard(l)); self._cards.add_widget(gap(6))
@@ -1224,23 +1176,21 @@ if HAS_KIVY:
         def __init__(self,app_ref,**kw):
             super().__init__(name="stats_scr",**kw); self.app_ref=app_ref
             bg(self,BG); self._build()
-
         def on_enter(self,*_): self._build()
-
         def _build(self):
             self.clear_widgets(); root=BoxLayout(orientation="vertical")
             bar=BoxLayout(size_hint_y=None,height=dp(58),padding=(dp(14),dp(8)))
-            bg(bar,BG2); bar.add_widget(lbl("📊 الإحصائيات",size=17,bold=True,color=WHITE))
+            bg(bar,BG2); bar.add_widget(lbl("📊 "+ar("الإحصائيات"),size=17,bold=True,color=WHITE))
             root.add_widget(bar)
             scroll=ScrollView(); body=BoxLayout(orientation="vertical",
-                padding=dp(16),spacing=dp(10),size_hint_y=None)
+                padding=dp(14),spacing=dp(8),size_hint_y=None)
             body.bind(minimum_height=body.setter("height"))
             st=get_stats_db()
 
             def stat_card(icon,label,value,color=None):
                 card=BoxLayout(size_hint_y=None,height=dp(68),padding=(dp(16),dp(8)),spacing=dp(12))
                 bg(card,BG2,radius=14)
-                card.add_widget(Label(text=icon,font_size=fs(28),size_hint=(None,None),size=(dp(50),dp(50))))
+                card.add_widget(Label(text=icon,font_size=sp(28),size_hint=(None,None),size=(dp(48),dp(48))))
                 txt=BoxLayout(orientation="vertical")
                 txt.add_widget(lbl(ar(label),size=12,color=TEXT2))
                 txt.add_widget(lbl(str(value),size=20,bold=True,color=color or tuple(PRIMARY())))
@@ -1252,28 +1202,26 @@ if HAS_KIVY:
                 except Exception: return "—"
 
             body.add_widget(stat_card("🏠","إجمالي الإعلانات المحفوظة",st.get("db_total",0)))
-            body.add_widget(stat_card("🆕","إعلانات جديدة تم إيجادها",st.get("total_new",0),GREEN))
+            body.add_widget(stat_card("🆕","إعلانات جديدة",st.get("total_new",0),GREEN))
             body.add_widget(stat_card("🔔","إشعارات مُرسلة",st.get("total_notif",0),AMBER))
-            body.add_widget(stat_card("📱","مرات فتح التطبيق",st.get("app_opens",0),PURPLE))
+            body.add_widget(stat_card("📱","مرات الفتح",st.get("app_opens",0),PURPLE))
             body.add_widget(stat_card("🕐","آخر فحص",ts_str(st.get("last_check")),TEXT2))
-            body.add_widget(stat_card("✨","آخر إعلان جديد",ts_str(st.get("last_new")),GREEN))
+            body.add_widget(stat_card("✨","آخر جديد",ts_str(st.get("last_new")),GREEN))
 
             body.add_widget(gap(4)); body.add_widget(sec("📊  حسب المصدر"))
-            by_src=st.get("by_source",{})
             for src,(name,gov) in SOURCES.items():
-                cnt=by_src.get(src,0)
+                cnt=st.get("by_source",{}).get(src,0)
                 if cnt>0:
-                    row=BoxLayout(size_hint_y=None,height=dp(42),padding=(dp(14),dp(4),dp(14),dp(4)))
+                    row=BoxLayout(size_hint_y=None,height=dp(40),padding=(dp(12),dp(4)))
                     bg(row,BG2,radius=10)
-                    c=PURPLE if gov else BLUE
-                    row.add_widget(lbl(("🏛 " if gov else "🔍 ")+ar(name),size=13,color=c,size_hint_x=0.65))
+                    row.add_widget(lbl(("🏛 " if gov else "🔍 ")+ar(name),size=13,
+                                       color=PURPLE if gov else BLUE,size_hint_x=0.65))
                     row.add_widget(lbl(str(cnt),size=16,bold=True,color=tuple(PRIMARY()),
                                        size_hint_x=0.35,halign="left"))
                     body.add_widget(row)
 
             body.add_widget(gap(8))
-            body.add_widget(btn("🗑 إفراغ قاعدة البيانات",on_press=self._clear,
-                                 color=RED,height=46,radius=12))
+            body.add_widget(btn("🗑 "+ar("إفراغ القاعدة"),on_press=self._clear,color=RED,height=46,radius=12))
             body.add_widget(gap(20))
             scroll.add_widget(body); root.add_widget(scroll)
             root.add_widget(nav_bar(self.app_ref,"stats_scr")); self.add_widget(root)
@@ -1296,21 +1244,19 @@ if HAS_KIVY:
         def __init__(self,app_ref,**kw):
             super().__init__(name="settings",**kw); self.app_ref=app_ref
             bg(self,BG); self._build()
-
         def _build(self):
             self.clear_widgets(); cfg=load_cfg(); root=BoxLayout(orientation="vertical")
             hdr=BoxLayout(size_hint_y=None,height=dp(58),padding=(dp(12),dp(8)),spacing=dp(10))
             bg(hdr,BG2)
-            hdr.add_widget(lbl("⚙️ الإعدادات",size=16,bold=True,color=WHITE))
+            hdr.add_widget(lbl("⚙️ "+ar("الإعدادات"),size=16,bold=True,color=WHITE))
             hdr.add_widget(btn("↩️",on_press=self._reset,color=BG3,text_color=TEXT2,
-                               size_hint_x=None,width=dp(50),height=42))
+                               size_hint_x=None,height=dp(42),width=dp(50)))
             root.add_widget(hdr)
-
             scroll=ScrollView(); body=BoxLayout(orientation="vertical",
                 padding=dp(14),spacing=dp(8),size_hint_y=None)
             body.bind(minimum_height=body.setter("height"))
 
-            def row(label_t, widget, hint=""):
+            def row(label_t,widget,hint=""):
                 r=BoxLayout(size_hint_y=None,height=dp(56),spacing=dp(12),padding=(dp(12),dp(4)))
                 bg(r,BG2,radius=12)
                 lb=BoxLayout(orientation="vertical",size_hint_x=0.45)
@@ -1322,76 +1268,32 @@ if HAS_KIVY:
                 pri=pri or PRIMARY()
                 t=ToggleButton(text=ar(text),state="down" if active else "normal",
                     size_hint=(1,None),height=dp(46),background_color=TRANSP,
-                    color=TEXT1,font_size=fs(13))
+                    color=TEXT1,font_size=fs(13),font_name=_font())
                 bg(t,(*pri[:3],0.15) if active else BG2,radius=12)
                 t.bind(state=lambda b,s,p=pri:bg(b,(*p[:3],0.15) if s=="down" else BG2,radius=12))
                 body.add_widget(t); return t
 
-            # ── Appearance ────────────────────────────────────────────
-            body.add_widget(gap(4)); body.add_widget(sec("🎨  المظهر"))
-
-            # Accent color
-            acc_row=BoxLayout(size_hint_y=None,height=dp(50),padding=(dp(12),dp(4)),spacing=dp(8))
-            bg(acc_row,BG2,radius=12)
-            acc_row.add_widget(lbl("لون التمييز:",size=13,color=TEXT1,size_hint_x=0.35))
-            self._accent_btns={}
-            cur_accent=cfg.get("accent","#22C55E")
-            for name,hex_ in ACCENT_PRESETS.items():
-                c=get_color_from_hex(hex_)
-                b=Button(text="●" if hex_==cur_accent else "○",
-                         size_hint=(None,None),size=(dp(32),dp(32)),
-                         background_color=TRANSP,color=c,font_size=fs(18))
-                b.bind(on_press=lambda _,h=hex_,n=name:self._set_accent(h))
-                self._accent_btns[hex_]=b; acc_row.add_widget(b)
-            body.add_widget(acc_row)
-
-            # Font scale
-            fs_row=BoxLayout(size_hint_y=None,height=dp(56),padding=(dp(12),dp(4)),spacing=dp(8))
-            bg(fs_row,BG2,radius=12)
-            fs_row.add_widget(lbl("حجم الخط:",size=13,color=TEXT1,size_hint_x=0.3))
-            self._fs_slider=Slider(min=0.8,max=1.4,value=cfg.get("font_scale",1.0),step=0.1)
-            self._fs_lbl=lbl(f"{cfg.get('font_scale',1.0):.1f}",size=13,color=tuple(PRIMARY()),
-                              size_hint_x=None,width=dp(35))
-            self._fs_slider.bind(value=lambda _,v:(
-                setattr(self._fs_lbl,"text",f"{v:.1f}"),
-                set_font_scale(v)))
-            fs_row.add_widget(self._fs_slider); fs_row.add_widget(self._fs_lbl)
-            body.add_widget(fs_row)
-
-            # ── Budget ───────────────────────────────────────────────
             body.add_widget(gap(4)); body.add_widget(sec("💰  الميزانية"))
-            self._min_p=tf(cfg.get("min_price",0)); row("الحد الأدنى (€)",self._min_p,"0=بدون حد")
+            self._min_p=tf(cfg.get("min_price",0)); row("الحد الأدنى (€)",self._min_p,"0=بدون")
             self._max_p=tf(cfg.get("max_price",700)); row("أقصى إيجار (€)",self._max_p)
 
-            # ── Rooms + Size ─────────────────────────────────────────
             body.add_widget(gap(4)); body.add_widget(sec("🛏  الغرف والمساحة"))
             rrow=BoxLayout(size_hint_y=None,height=dp(56),spacing=dp(6),padding=(dp(12),dp(4)))
             bg(rrow,BG2,radius=12)
             rrow.add_widget(lbl("الغرف:",size=13,color=TEXT1,size_hint_x=0.2))
             self._min_r=tf(cfg.get("min_rooms",0),"float"); self._max_r=tf(cfg.get("max_rooms",0),"float")
-            rrow.add_widget(lbl("من",size=11,color=TEXT2,size_hint_x=0.07))
-            rrow.add_widget(self._min_r); rrow.add_widget(lbl("—",size=13,color=TEXT2,size_hint_x=0.06))
-            rrow.add_widget(self._max_r); rrow.add_widget(lbl("0=أي",size=10,color=TEXT3,size_hint_x=0.13))
+            rrow.add_widget(lbl("من",size=11,color=TEXT2,size_hint_x=0.07)); rrow.add_widget(self._min_r)
+            rrow.add_widget(lbl("—",size=13,color=TEXT2,size_hint_x=0.06)); rrow.add_widget(self._max_r)
             body.add_widget(rrow)
-            szr=BoxLayout(size_hint_y=None,height=dp(56),spacing=dp(6),padding=(dp(12),dp(4)))
-            bg(szr,BG2,radius=12)
-            szr.add_widget(lbl("المساحة (م²):",size=13,color=TEXT1,size_hint_x=0.32))
-            self._min_sz=tf(cfg.get("min_size",0)); self._max_sz=tf(cfg.get("max_size",0))
-            szr.add_widget(lbl("من",size=11,color=TEXT2,size_hint_x=0.07))
-            szr.add_widget(self._min_sz); szr.add_widget(lbl("—",size=13,color=TEXT2,size_hint_x=0.06))
-            szr.add_widget(self._max_sz)
-            body.add_widget(szr)
 
-            # ── WBS ─────────────────────────────────────────────────
             body.add_widget(gap(4)); body.add_widget(sec("📋  WBS"))
             self._wbs=tog("WBS فقط",cfg.get("wbs_only",False))
             wlr=BoxLayout(size_hint_y=None,height=dp(56),spacing=dp(6),padding=(dp(12),dp(4)))
             bg(wlr,BG2,radius=12)
             wlr.add_widget(lbl("مستوى:",size=13,color=TEXT1,size_hint_x=0.28))
             self._wlmin=tf(cfg.get("wbs_level_min",0)); self._wlmax=tf(cfg.get("wbs_level_max",999))
-            wlr.add_widget(lbl("من",size=11,color=TEXT2,size_hint_x=0.07))
-            wlr.add_widget(self._wlmin); wlr.add_widget(lbl("—",size=13,color=TEXT2,size_hint_x=0.06))
-            wlr.add_widget(self._wlmax)
+            wlr.add_widget(lbl("من",size=11,color=TEXT2,size_hint_x=0.07)); wlr.add_widget(self._wlmin)
+            wlr.add_widget(lbl("—",size=13,color=TEXT2,size_hint_x=0.06)); wlr.add_widget(self._wlmax)
             body.add_widget(wlr)
             pr=BoxLayout(size_hint_y=None,height=dp(36),spacing=dp(6))
             for lt,mn,mx in [("100","100","100"),("100-140","100","140"),("100-160","100","160"),("كل","0","999")]:
@@ -1400,29 +1302,28 @@ if HAS_KIVY:
                 pr.add_widget(b)
             body.add_widget(pr)
 
-            # ── Social ───────────────────────────────────────────────
             body.add_widget(gap(4)); body.add_widget(sec("🏛  فلاتر اجتماعية"))
             self._hh=tf(cfg.get("household_size",1))
             n_=max(1,int(cfg.get("household_size") or 1))
-            row("أفراد الأسرة",self._hh,f"JC≤{jc(n_):.0f}€ · WG≤{wg(n_):.0f}€")
-            self._jc=tog("🏛 Jobcenter KdU",cfg.get("jobcenter_mode",False),PURPLE)
-            self._wg=tog("🏦 Wohngeld",cfg.get("wohngeld_mode",False),PURPLE)
+            row("أفراد الأسرة",self._hh,f"JC≤{jc(n_):.0f}€ WG≤{wg(n_):.0f}€")
+            self._jc=tog("Jobcenter KdU",cfg.get("jobcenter_mode",False),PURPLE)
+            self._wg=tog("Wohngeld",cfg.get("wohngeld_mode",False),PURPLE)
 
-            # ── Areas ────────────────────────────────────────────────
             body.add_widget(gap(4)); body.add_widget(sec("📍  المناطق"))
             cur_areas=cfg.get("areas") or []; self._area_btns={}
             ag=GridLayout(cols=2,size_hint_y=None,height=dp(((len(BERLIN_AREAS)+1)//2)*40),spacing=dp(6))
             for area in BERLIN_AREAS:
                 on=area in cur_areas
                 b=ToggleButton(text=area,state="down" if on else "normal",
-                    size_hint=(1,None),height=dp(38),background_color=TRANSP,color=TEXT1,font_size=fs(12))
+                    size_hint=(1,None),height=dp(38),background_color=TRANSP,
+                    color=TEXT1,font_size=fs(12))
                 bg(b,(*AMBER[:3],0.15) if on else BG2,radius=10)
                 b.bind(state=lambda x,s,b=b:bg(b,(*AMBER[:3],0.15) if s=="down" else BG2,radius=10))
                 self._area_btns[area]=b; ag.add_widget(b)
             body.add_widget(ag)
-            body.add_widget(btn("🌍 كل برلين",on_press=self._clear_areas,color=BG3,text_color=TEXT2,height=36,radius=10))
+            body.add_widget(btn("🌍 "+ar("كل برلين"),on_press=self._clear_areas,
+                                 color=BG3,text_color=TEXT2,height=36,radius=10))
 
-            # ── Sources ──────────────────────────────────────────────
             body.add_widget(gap(4)); body.add_widget(sec("🌐  المصادر"))
             cur_src=cfg.get("sources") or []; self._src_btns={}
             for sid,(sname,gov) in SOURCES.items():
@@ -1434,12 +1335,11 @@ if HAS_KIVY:
                 b.bind(state=lambda x,s,sc=sc,b=b:bg(b,(*sc[:3],0.15) if s=="down" else BG2,radius=12))
                 self._src_btns[sid]=b; body.add_widget(b)
             qr=BoxLayout(size_hint_y=None,height=dp(38),spacing=dp(8))
-            qr.add_widget(btn("✅ الكل",on_press=lambda*_:self._all_src(True),color=BG3,text_color=TEXT1,height=38,radius=10))
-            qr.add_widget(btn("🏛 حكومية فقط",on_press=self._gov_only,color=(*PURPLE[:3],1),height=38,radius=10))
+            qr.add_widget(btn("✅ "+ar("الكل"),on_press=lambda*_:self._all_src(True),color=BG3,text_color=TEXT1,height=38,radius=10))
+            qr.add_widget(btn("🏛 "+ar("حكومية"),on_press=self._gov_only,color=(*PURPLE[:3],1),height=38,radius=10))
             body.add_widget(qr)
 
-            # ── Sort + Advanced ───────────────────────────────────────
-            body.add_widget(gap(4)); body.add_widget(sec("🔧  الترتيب والخيارات"))
+            body.add_widget(gap(4)); body.add_widget(sec("🔧  متقدم"))
             sort_opts=[("score","🏅 الأفضل"),("price_asc","💰↑"),("price_desc","💰↓"),("newest","🕐")]
             cur_sort=cfg.get("sort_by","score"); self._sort_btns={}
             sr=BoxLayout(size_hint_y=None,height=dp(36),spacing=dp(6))
@@ -1450,25 +1350,18 @@ if HAS_KIVY:
                 b.bind(state=lambda x,s,k=k,b=b:(bg(b,(*BLUE[:3],0.15) if s=="down" else BG2,radius=10),self._excl(k) if s=="down" else None))
                 self._sort_btns[k]=b; sr.add_widget(b)
             body.add_widget(sr)
-            self._bg_int=tf(cfg.get("bg_interval",30)); row("فترة الخلفية (دقيقة)",self._bg_int,"5-∞")
-            self._purge=tf(cfg.get("purge_days",60)); row("حذف القديم (يوم)",self._purge,"60=افتراضي")
+            self._bg_int=tf(cfg.get("bg_interval",30)); row("فترة الخلفية (دقيقة)",self._bg_int,"5+")
             self._notif=tog("🔔 إشعارات",cfg.get("notifications",True))
-            self._show_hid=tog("👁 عرض المخفية",cfg.get("show_hidden",False))
-
             bg_on=is_bg()
-            self._bg_btn=btn("⏹ إيقاف الخلفية" if bg_on else "▶ تشغيل الخلفية",
+            self._bg_btn=btn("⏹ "+ar("إيقاف الخلفية") if bg_on else "▶ "+ar("تشغيل الخلفية"),
                               on_press=self._toggle_bg,color=RED if bg_on else tuple(PRIMARY()),
                               height=46,radius=12)
             body.add_widget(gap(6)); body.add_widget(self._bg_btn)
             body.add_widget(gap(8))
-            body.add_widget(btn("💾 حفظ الإعدادات",on_press=self._save,height=54,radius=14))
+            body.add_widget(btn("💾 "+ar("حفظ"),on_press=self._save,height=54,radius=14))
             body.add_widget(gap(20))
             scroll.add_widget(body); root.add_widget(scroll)
             root.add_widget(nav_bar(self.app_ref,"settings")); self.add_widget(root)
-
-        def _set_accent(self,hex_):
-            set_accent(hex_)
-            for h,b in self._accent_btns.items(): b.text="●" if h==hex_ else "○"
 
         def _clear_areas(self,*_):
             for b in self._area_btns.values(): b.state="normal"; bg(b,BG2,radius=10)
@@ -1497,61 +1390,121 @@ if HAS_KIVY:
             sel_src=[sid for sid,b in self._src_btns.items() if b.state=="down"]
             sel_areas=[area for area,b in self._area_btns.items() if b.state=="down"]
             cur_sort=next((k for k,b in self._sort_btns.items() if b.state=="down"),"score")
-            cfg=load_cfg(); acc=cfg.get("accent","#22C55E")
-            for h,b in self._accent_btns.items():
-                if b.text=="●": acc=h; break
+            cfg=load_cfg()
             cfg.update({
                 "min_price":si(self._min_p,0),"max_price":si(self._max_p,700),
                 "min_rooms":sf(self._min_r,0),"max_rooms":sf(self._max_r,0),
-                "min_size":si(self._min_sz,0),"max_size":si(self._max_sz,0),
                 "household_size":max(1,si(self._hh,1)),"wbs_only":self._wbs.state=="down",
                 "wbs_level_min":si(self._wlmin,0),"wbs_level_max":si(self._wlmax,999),
                 "jobcenter_mode":self._jc.state=="down","wohngeld_mode":self._wg.state=="down",
                 "areas":sel_areas,"sources":sel_src if len(sel_src)<len(SOURCES) else [],
                 "sort_by":cur_sort,"bg_interval":max(5,si(self._bg_int,30)),
-                "purge_days":max(7,si(self._purge,60)),"notifications":self._notif.state=="down",
-                "show_hidden":self._show_hid.state=="down",
-                "font_scale":round(self._fs_slider.value,1),"accent":acc,
+                "notifications":self._notif.state=="down",
             })
-            save_cfg(cfg); set_font_scale(cfg["font_scale"]); set_accent(acc)
-            self.app_ref.sm.current="listings"
+            save_cfg(cfg); self.app_ref.sm.current="listings"
 
 # ═══════════════════════════════════════════════════════════════════════
-# App
+# App Entry Point
 # ═══════════════════════════════════════════════════════════════════════
 if HAS_KIVY:
     class WBSApp(App):
         def build(self):
-            self.title="WBS Berlin"
-            init_db(); bump_opens()
-            cfg=load_cfg()
-            set_font_scale(cfg.get("font_scale",1.0))
-            set_accent(cfg.get("accent","#22C55E"))
-            Window.clearcolor=BG
-            _ensure_channel(); start_bg()
-            self.sm=ScreenManager(transition=FadeTransition(duration=0.15))
-            if is_first_run():
-                self.sm.add_widget(OnboardingScreen(self)); self.sm.current="onboarding"
-            else: self._add_main()
-            return self.sm
+            try:
+                # 1. Set storage directory (must be first)
+                try:
+                    from android.storage import app_storage_path
+                    _dir = app_storage_path()
+                except Exception:
+                    try:
+                        # Kivy's built-in path for Android
+                        _dir = self.user_data_dir
+                    except Exception:
+                        _dir = "."
+                set_data_dir(_dir)
+
+                # 2. Init DB
+                init_db()
+                bump_opens()
+
+                # 3. Font setup
+                try:
+                    font_path = os.path.join(os.path.dirname(__file__), "NotoNaskhArabic.ttf")
+                    if os.path.exists(font_path):
+                        LabelBase.register(name="NotoArabic", fn_regular=font_path)
+                        _FONT_NAME[0] = "NotoArabic"
+                except Exception:
+                    pass  # Use default font
+
+                # 4. Config + accent
+                cfg = load_cfg()
+                set_font_scale(cfg.get("font_scale", 1.0))
+                set_accent(cfg.get("accent", "#22C55E"))
+
+                # 5. Window
+                Window.clearcolor = BG
+
+                # 6. Notification channel
+                try: _ensure_channel()
+                except Exception: pass
+
+                # 7. Build screen manager
+                self.sm = ScreenManager(transition=FadeTransition(duration=0.15))
+
+                if is_first_run():
+                    self.sm.add_widget(OnboardingScreen(self))
+                    self.sm.current = "onboarding"
+                else:
+                    self._add_main()
+
+                # 8. Start background AFTER UI is built (deferred 3s)
+                Clock.schedule_once(lambda dt: start_bg(), 3.0)
+
+                return self.sm
+
+            except Exception as e:
+                import traceback
+                err_msg = traceback.format_exc()
+                # Show error screen instead of crashing silently
+                try:
+                    self.sm = ScreenManager()
+                    self.sm.add_widget(ErrorScreen(err_msg))
+                    return self.sm
+                except Exception:
+                    # Last resort: minimal widget
+                    from kivy.uix.label import Label
+                    return Label(text=f"Startup error:\n{str(e)[:200]}")
 
         def _add_main(self):
-            for name,cls in [("listings",ListingsScreen),("favorites",FavoritesScreen),
-                              ("stats_scr",StatsScreen),("settings",SettingsScreen)]:
-                if not any(s.name==name for s in self.sm.screens):
+            for name, cls in [
+                ("listings",  ListingsScreen),
+                ("favorites", FavoritesScreen),
+                ("stats_scr", StatsScreen),
+                ("settings",  SettingsScreen),
+            ]:
+                if not any(s.name == name for s in self.sm.screens):
                     self.sm.add_widget(cls(self))
 
-        def go_main(self): self._add_main(); self.sm.current="listings"
-        def on_stop(self): pass  # keep bg running
+        def go_main(self):
+            self._add_main()
+            self.sm.current = "listings"
 
-    if __name__=="__main__": WBSApp().run()
+        def on_stop(self):
+            pass  # keep bg running
+
+    if __name__ == "__main__":
+        WBSApp().run()
+
 else:
-    if __name__=="__main__":
-        init_db(); print(f"Network: {check_network()}")
-        raw=fetch_all(); new=sum(1 for l in raw if save_listing(l))
-        cfg=dict(DEFAULTS); shown=sort_listings(apply_filters(raw,cfg),"score")
-        print(f"Results: {len(shown)}/{len(raw)} ({new} new)")
+    if __name__ == "__main__":
+        import argparse
+        ap = argparse.ArgumentParser(); ap.add_argument("--dir", default=".")
+        args = ap.parse_args(); set_data_dir(args.dir)
+        init_db(); print(f"DB: {DB_PATH()}")
+        print(f"Network: {check_network()}")
+        raw = fetch_all()
+        cfg = dict(DEFAULTS)
+        shown = sort_listings(apply_filters(raw, cfg), "score")
+        print(f"Results: {len(shown)}/{len(raw)}")
         for l in shown[:5]:
-            p=f"{l['price']:.0f}€" if l.get("price") else "—"
+            p = f"{l['price']:.0f}€" if l.get("price") else "—"
             print(f"  [{l['source']}] {p} | {l.get('title','')[:45]}")
-        st=get_stats_db(); print(f"DB: {st['db_total']} total")

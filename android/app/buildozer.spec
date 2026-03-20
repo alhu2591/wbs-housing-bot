@@ -3,10 +3,12 @@ title = WBS Berlin
 package.name = wbsberlin
 package.domain = de.alaa.wbs
 source.dir = .
-source.include_exts = py,png,jpg,kv,atlas,json
-version = 4.0.0
+source.include_exts = py,png,jpg,kv,atlas,json,ttf
+version = 4.1.0
 
-requirements = python3,kivy==2.2.1,beautifulsoup4,arabic-reshaper,python-bidi
+# sqlite3 is a p4a recipe — must be explicit
+# arabic-reshaper + python-bidi = pure Python (safe)
+requirements = python3,kivy==2.2.1,sqlite3,beautifulsoup4,arabic-reshaper,python-bidi
 
 orientation = portrait
 fullscreen = 0
