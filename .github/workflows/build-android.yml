@@ -15,54 +15,53 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Pre-write ALL Android license hashes so sdkmanager never prompts
-      - name: Pre-create SDK license files
+      # Pre-write ALL Android SDK license hashes (prevents interactive prompts)
+      - name: Pre-accept SDK licenses
         run: |
           SDK="$HOME/.buildozer/android/platform/android-sdk"
           mkdir -p "$SDK/licenses"
-
-          # android-sdk-license (stable packages)
           printf '%s\n' \
             "24333f8a63b6825ea9c5514f83c2829b004d1fee" \
             "d56f5187479451eabf01fb78af6dfcb131a6481e" \
             "8933bad161af4178b1185d1a37fbf41ea5269c55" \
             > "$SDK/licenses/android-sdk-license"
+          printf '%s\n' \
+            "84831b9409646a918e30573bab4c9c91346d8abd" \
+            "504667f4c0de7af1a06de9f4b1727b84351f2910" \
+            > "$SDK/licenses/android-sdk-preview-license"
+          printf '%s\n' "601085b94cd77f0b54ff86406957099ebe79c4d7" \
+            > "$SDK/licenses/android-googletv-license"
+          printf '%s\n' "33b6a2b64607f11b759f320ef9dff4ae5c47d97a" \
+            > "$SDK/licenses/google-gdk-license"
 
-          # android-sdk-preview-license (rc / preview packages like build-tools 37-rc2)
+      - name: Cache buildozer (.buildozer dir)
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildozer
+          key: buildozer-${{ hashFiles('android/app/buildozer.spec') }}-v12
+          restore-keys: buildozer-
+
+      # Official Kivy Docker image — mounts our pre-written licenses
+      - name: Build APK (Docker + license fix)
+        run: |
+          SDK="$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$SDK/licenses"
+          # Write licenses again inside the volume so Docker sees them
+          printf '%s\n' \
+            "24333f8a63b6825ea9c5514f83c2829b004d1fee" \
+            "d56f5187479451eabf01fb78af6dfcb131a6481e" \
+            "8933bad161af4178b1185d1a37fbf41ea5269c55" \
+            > "$SDK/licenses/android-sdk-license"
           printf '%s\n' \
             "84831b9409646a918e30573bab4c9c91346d8abd" \
             "504667f4c0de7af1a06de9f4b1727b84351f2910" \
             > "$SDK/licenses/android-sdk-preview-license"
 
-          # Other licenses that may be needed
-          printf '%s\n' "601085b94cd77f0b54ff86406957099ebe79c4d7" \
-            > "$SDK/licenses/android-googletv-license"
-          printf '%s\n' "33b6a2b64607f11b759f320ef9dff4ae5c47d97a" \
-            > "$SDK/licenses/google-gdk-license"
-          printf '%s\n' "e9acab5b5fbb560a72cfaecce8946896ff6aab9d" \
-            > "$SDK/licenses/mips-android-sysimage-license"
-
-          echo "=== License files ready at $SDK/licenses/ ==="
-          ls -la "$SDK/licenses/"
-
-      - name: Cache buildozer
-        uses: actions/cache@v4
-        with:
-          path: ~/.buildozer
-          key: buildozer-${{ hashFiles('android/app/buildozer.spec') }}-v9
-          restore-keys: buildozer-
-
-      # Mount our pre-written licenses into the exact path buildozer uses inside Docker
-      - name: Build APK via Kivy Docker
-        run: |
-          SDK_LIC="$HOME/.buildozer/android/platform/android-sdk/licenses"
-          mkdir -p "$SDK_LIC"
-
           docker run --rm \
             -v "${{ github.workspace }}/android/app":/home/user/hostcwd \
             -v "$HOME/.buildozer":/home/user/.buildozer \
             ghcr.io/kivy/buildozer:latest \
-            android debug
+            android debug 2>&1
 
       - name: Find APK
         id: apk
@@ -73,47 +72,52 @@ jobs:
             echo "name=$(basename $F)" >> "$GITHUB_OUTPUT"
             echo "✅ APK: $F"
           else
-            echo "❌ No APK"
+            echo "❌ No APK — listing bin/:"
             ls -la android/app/bin/ 2>/dev/null || true
+            echo "--- last 100 lines of buildozer log ---"
+            find android/app/.buildozer -name "*.log" 2>/dev/null | head -3 | xargs tail -100 2>/dev/null || true
+            exit 1
           fi
 
       - name: Upload APK artifact
-        if: steps.apk.outputs.path != ''
         uses: actions/upload-artifact@v4
         with:
-          name: WBSBerlin-APK
+          name: WBSBerlin-APK-v4
           path: ${{ steps.apk.outputs.path }}
           retention-days: 60
 
       - name: Create GitHub Release
-        if: steps.apk.outputs.path != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "android-v${{ github.run_number }}"
-          name: "📱 WBS Berlin APK #${{ github.run_number }}"
+          name: "📱 WBS Berlin APK v4.0 — Build #${{ github.run_number }}"
           body: |
-            ## 📥 تحميل تطبيق WBS Berlin
+            ## 📥 WBS Berlin v4.0
+
+            ### الجديد في هذا الإصدار:
+            - 🗄 قاعدة بيانات SQLite — لا تكرار للإعلانات أبداً
+            - ⭐ شاشة المفضلة
+            - 📊 شاشة الإحصائيات
+            - 🎨 ألوان تمييز 6 خيارات + حجم خط قابل للتخصيص
+            - 🔔 إشعارات + خدمة خلفية دائمة
+            - 🇦🇪 نص عربي صحيح
 
             ### التثبيت:
-            1. حمّل ملف APK أدناه
-            2. **الإعدادات → الأمان → مصادر غير معروفة → تفعيل**
-            3. افتح ملف APK وثبّته
+            1. حمّل APK أدناه
+            2. الإعدادات → الأمان → مصادر غير معروفة ✅
+            3. افتح APK وثبّته
 
-            ### المميزات:
-            - 9 مصادر (Gewobag, Degewo, Gesobau, WBM, Vonovia...)
-            - فلتر WBS Level (100–220)
-            - فلتر Jobcenter KdU
-            - فتح الإعلان في المتصفح
-
-            Built: `${{ github.sha }}`
+            Built from `${{ github.sha }}`
           files: ${{ steps.apk.outputs.path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload logs on failure
+      - name: Upload full log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: android/app/.buildozer/
+          name: build-logs-v${{ github.run_number }}
+          path: |
+            android/app/.buildozer/android/platform/build-arm64-v8a/dists/
+            android/app/.buildozer/*.log
           retention-days: 7

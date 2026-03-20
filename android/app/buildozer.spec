@@ -6,7 +6,9 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json
 version = 4.0.0
 
-requirements = python3,kivy==2.3.0,beautifulsoup4,arabic-reshaper,python-bidi
+# kivy 2.2.1 + cython 0.29.33 = last known-good stable combination
+# arabic-reshaper + python-bidi are pure Python (no C compilation needed)
+requirements = python3,kivy==2.2.1,cython==0.29.33,beautifulsoup4,arabic-reshaper,python-bidi
 
 orientation = portrait
 fullscreen = 0
@@ -18,9 +20,13 @@ android.permissions = INTERNET,FOREGROUND_SERVICE,VIBRATE,POST_NOTIFICATIONS,REC
 android.api = 33
 android.minapi = 26
 android.ndk = 25b
+android.ndk_api = 24
 android.archs = arm64-v8a
 android.allow_backup = True
 android.enable_androidx = True
+
+# Force Cython to generate .c files before Kivy compiles
+p4a.hook = pre_build_hook.py
 
 [buildozer]
 log_level = 2
