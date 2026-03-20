@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-apk:
-    name: Build APK (Docker)
+    name: Build APK
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
@@ -15,44 +15,78 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Pre-write ALL Android license hashes so sdkmanager never prompts
+      - name: Pre-create SDK license files
+        run: |
+          SDK="$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$SDK/licenses"
+
+          # android-sdk-license (stable packages)
+          printf '%s\n' \
+            "24333f8a63b6825ea9c5514f83c2829b004d1fee" \
+            "d56f5187479451eabf01fb78af6dfcb131a6481e" \
+            "8933bad161af4178b1185d1a37fbf41ea5269c55" \
+            > "$SDK/licenses/android-sdk-license"
+
+          # android-sdk-preview-license (rc / preview packages like build-tools 37-rc2)
+          printf '%s\n' \
+            "84831b9409646a918e30573bab4c9c91346d8abd" \
+            "504667f4c0de7af1a06de9f4b1727b84351f2910" \
+            > "$SDK/licenses/android-sdk-preview-license"
+
+          # Other licenses that may be needed
+          printf '%s\n' "601085b94cd77f0b54ff86406957099ebe79c4d7" \
+            > "$SDK/licenses/android-googletv-license"
+          printf '%s\n' "33b6a2b64607f11b759f320ef9dff4ae5c47d97a" \
+            > "$SDK/licenses/google-gdk-license"
+          printf '%s\n' "e9acab5b5fbb560a72cfaecce8946896ff6aab9d" \
+            > "$SDK/licenses/mips-android-sysimage-license"
+
+          echo "=== License files ready at $SDK/licenses/ ==="
+          ls -la "$SDK/licenses/"
+
       - name: Cache buildozer
         uses: actions/cache@v4
         with:
-          path: android/app/.buildozer
-          key: buildozer-${{ hashFiles('android/app/buildozer.spec') }}-v8
+          path: ~/.buildozer
+          key: buildozer-${{ hashFiles('android/app/buildozer.spec') }}-v9
           restore-keys: buildozer-
 
-      # Official Kivy Docker image — SDK + NDK + licenses pre-installed
+      # Mount our pre-written licenses into the exact path buildozer uses inside Docker
       - name: Build APK via Kivy Docker
         run: |
+          SDK_LIC="$HOME/.buildozer/android/platform/android-sdk/licenses"
+          mkdir -p "$SDK_LIC"
+
           docker run --rm \
             -v "${{ github.workspace }}/android/app":/home/user/hostcwd \
+            -v "$HOME/.buildozer":/home/user/.buildozer \
             ghcr.io/kivy/buildozer:latest \
             android debug
 
       - name: Find APK
-        id: find_apk
+        id: apk
         run: |
-          APK=$(find android/app/bin -name "*.apk" 2>/dev/null | head -1)
-          if [ -n "$APK" ]; then
-            echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
-            echo "apk_name=$(basename $APK)" >> "$GITHUB_OUTPUT"
-            echo "Found: $APK"
+          F=$(find android/app/bin -name "*.apk" 2>/dev/null | head -1)
+          if [ -n "$F" ]; then
+            echo "path=$F" >> "$GITHUB_OUTPUT"
+            echo "name=$(basename $F)" >> "$GITHUB_OUTPUT"
+            echo "✅ APK: $F"
           else
-            echo "No APK found"
+            echo "❌ No APK"
             ls -la android/app/bin/ 2>/dev/null || true
           fi
 
       - name: Upload APK artifact
-        if: steps.find_apk.outputs.apk_path != ''
+        if: steps.apk.outputs.path != ''
         uses: actions/upload-artifact@v4
         with:
           name: WBSBerlin-APK
-          path: ${{ steps.find_apk.outputs.apk_path }}
+          path: ${{ steps.apk.outputs.path }}
           retention-days: 60
 
       - name: Create GitHub Release
-        if: steps.find_apk.outputs.apk_path != ''
+        if: steps.apk.outputs.path != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "android-v${{ github.run_number }}"
@@ -62,16 +96,24 @@ jobs:
 
             ### التثبيت:
             1. حمّل ملف APK أدناه
-            2. على هاتفك: **الإعدادات → الأمان → مصادر غير معروفة → تفعيل**
+            2. **الإعدادات → الأمان → مصادر غير معروفة → تفعيل**
             3. افتح ملف APK وثبّته
 
             ### المميزات:
-            - 9 مصادر إعلانات برلين (Gewobag, Degewo, Gesobau, WBM...)
-            - فلتر WBS Level (100 / 140 / 160 / 180 / 200 / 220)
-            - فلتر Jobcenter KdU تلقائي
-            - فتح الإعلان مباشرة في المتصفح
+            - 9 مصادر (Gewobag, Degewo, Gesobau, WBM, Vonovia...)
+            - فلتر WBS Level (100–220)
+            - فلتر Jobcenter KdU
+            - فتح الإعلان في المتصفح
 
-            Built from commit `${{ github.sha }}`
-          files: ${{ steps.find_apk.outputs.apk_path }}
+            Built: `${{ github.sha }}`
+          files: ${{ steps.apk.outputs.path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: android/app/.buildozer/
+          retention-days: 7
