@@ -3,10 +3,9 @@ title = WBS Berlin
 package.name = wbsberlin
 package.domain = de.alaa.wbs
 source.dir = .
-source.include_exts = py,png,jpg,kv,atlas,json,ttf
-version = 3.0.0
+source.include_exts = py,png,jpg,kv,atlas,json
+version = 4.0.0
 
-# arabic_reshaper + python-bidi: pure Python, fix Arabic squares
 requirements = python3,kivy==2.3.0,beautifulsoup4,arabic-reshaper,python-bidi
 
 orientation = portrait
@@ -15,7 +14,7 @@ fullscreen = 0
 icon.filename = %(source.dir)s/icon.png
 presplash.filename = %(source.dir)s/presplash.png
 
-android.permissions = INTERNET,FOREGROUND_SERVICE,RECEIVE_BOOT_COMPLETED,VIBRATE,POST_NOTIFICATIONS
+android.permissions = INTERNET,FOREGROUND_SERVICE,VIBRATE,POST_NOTIFICATIONS,RECEIVE_BOOT_COMPLETED
 android.api = 33
 android.minapi = 26
 android.ndk = 25b
