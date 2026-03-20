@@ -15,7 +15,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Pre-write ALL Android SDK license hashes (prevents interactive prompts)
       - name: Pre-accept SDK licenses
         run: |
           SDK="$HOME/.buildozer/android/platform/android-sdk"
@@ -34,19 +33,18 @@ jobs:
           printf '%s\n' "33b6a2b64607f11b759f320ef9dff4ae5c47d97a" \
             > "$SDK/licenses/google-gdk-license"
 
-      - name: Cache buildozer (.buildozer dir)
+      - name: Cache buildozer
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
-          key: buildozer-${{ hashFiles('android/app/buildozer.spec') }}-v12
+          key: buildozer-${{ hashFiles('android/app/buildozer.spec','android/app/recipes/kivy/__init__.py') }}-v15
           restore-keys: buildozer-
 
-      # Official Kivy Docker image — mounts our pre-written licenses
-      - name: Build APK (Docker + license fix)
+      - name: Build APK (Docker + PyPI kivy)
         run: |
+          # Re-write licenses into the volume
           SDK="$HOME/.buildozer/android/platform/android-sdk"
           mkdir -p "$SDK/licenses"
-          # Write licenses again inside the volume so Docker sees them
           printf '%s\n' \
             "24333f8a63b6825ea9c5514f83c2829b004d1fee" \
             "d56f5187479451eabf01fb78af6dfcb131a6481e" \
@@ -72,21 +70,20 @@ jobs:
             echo "name=$(basename $F)" >> "$GITHUB_OUTPUT"
             echo "✅ APK: $F"
           else
-            echo "❌ No APK — listing bin/:"
-            ls -la android/app/bin/ 2>/dev/null || true
-            echo "--- last 100 lines of buildozer log ---"
-            find android/app/.buildozer -name "*.log" 2>/dev/null | head -3 | xargs tail -100 2>/dev/null || true
+            echo "❌ No APK"
+            find android/app/.buildozer -name "*.log" 2>/dev/null \
+              | head -3 | xargs tail -120 2>/dev/null || true
             exit 1
           fi
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: WBSBerlin-APK-v4
           path: ${{ steps.apk.outputs.path }}
           retention-days: 60
 
-      - name: Create GitHub Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "android-v${{ github.run_number }}"
@@ -94,16 +91,8 @@ jobs:
           body: |
             ## 📥 WBS Berlin v4.0
 
-            ### الجديد في هذا الإصدار:
-            - 🗄 قاعدة بيانات SQLite — لا تكرار للإعلانات أبداً
-            - ⭐ شاشة المفضلة
-            - 📊 شاشة الإحصائيات
-            - 🎨 ألوان تمييز 6 خيارات + حجم خط قابل للتخصيص
-            - 🔔 إشعارات + خدمة خلفية دائمة
-            - 🇦🇪 نص عربي صحيح
-
-            ### التثبيت:
-            1. حمّل APK أدناه
+            **التثبيت:**
+            1. حمّل APK
             2. الإعدادات → الأمان → مصادر غير معروفة ✅
             3. افتح APK وثبّته
 
@@ -112,12 +101,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload full log on failure
+      - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-v${{ github.run_number }}
-          path: |
-            android/app/.buildozer/android/platform/build-arm64-v8a/dists/
-            android/app/.buildozer/*.log
+          name: build-logs-${{ github.run_number }}
+          path: android/app/.buildozer/
           retention-days: 7
