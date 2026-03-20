@@ -1,96 +1,81 @@
 """
-p4a build hook — patches AndroidManifest.xml for Android 12-16.
-
-CRITICAL fixes:
-1. android:exported="true" on main Activity
-   → Required since Android 12 (API 31). Without it: instant crash.
-   
-2. Remove any FOREGROUND_SERVICE_TYPE that isn't backed by a real
-   Android Service (we use Python daemon threads, not Android Services)
-   
-3. tools:targetApi on uses-permission for POST_NOTIFICATIONS
-   → Required since Android 13 (API 33)
+p4a hook for Android 12-16 (Samsung A53 + OneUI 8 + Android 16).
+Patches AndroidManifest.xml to add android:exported attributes.
+This is the #1 cause of black-screen-then-exit on Android 12+.
 """
 import os
 import re
 
 
-def _find_manifests(ctx):
-    """Find all AndroidManifest.xml files in the build."""
-    manifests = []
-    search_dirs = [
-        ctx.build_dir,
-        os.path.join(ctx.build_dir, 'bootstrap_builds'),
-        os.path.join(ctx.build_dir, 'dists'),
-    ]
-    for sd in search_dirs:
-        for root, dirs, files in os.walk(sd):
-            for f in files:
-                if f == 'AndroidManifest.xml':
-                    manifests.append(os.path.join(root, f))
-    return manifests
-
-
 def _patch_manifest(path):
-    """Apply all Android 12-16 compat patches to a manifest."""
     try:
-        content = open(path).read()
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
     except Exception:
         return
 
     original = content
 
-    # Fix 1: Add android:exported="true" to main Activity if missing
-    # The main SDL2 Activity MUST be exported so the launcher can start it
+    # Add android:exported="true" to main PythonActivity
+    def add_exported_activity(m):
+        tag = m.group(0)
+        if 'android:exported' not in tag:
+            tag = tag.replace('<activity ', '<activity android:exported="true" ', 1)
+        return tag
+
     content = re.sub(
-        r'(<activity[^>]*org\.kivy\.android\.PythonActivity[^>]*?)(\s*/?>)',
-        lambda m: (m.group(1) + ' android:exported="true"' + m.group(2))
-                  if 'android:exported' not in m.group(1) else m.group(0),
-        content, flags=re.DOTALL
+        r'<activity\s[^>]*PythonActivity[^>]*/?>',
+        add_exported_activity, content, flags=re.DOTALL
+    )
+    content = re.sub(
+        r'<activity\s[^>]*PythonActivity[^>]*>.*?</activity>',
+        add_exported_activity, content, flags=re.DOTALL
     )
 
-    # Fix 2: Add android:exported="true" to PythonService if present
+    # Add exported=false to services/receivers missing it
+    def add_exported_false(m):
+        tag = m.group(0)
+        if 'android:exported' not in tag:
+            # Insert after the tag name
+            tag = re.sub(r'(<(?:service|receiver|provider)\s)', r'\1android:exported="false" ', tag, count=1)
+        return tag
+
     content = re.sub(
-        r'(<service[^>]*PythonService[^>]*?)(\s*/?>)',
-        lambda m: (m.group(1) + ' android:exported="false"' + m.group(2))
-                  if 'android:exported' not in m.group(1) else m.group(0),
-        content, flags=re.DOTALL
-    )
-
-    # Fix 3: Generic — add exported to any Activity/Service/Receiver missing it
-    for tag in ['activity', 'service', 'receiver', 'provider']:
-        default = '"true"' if tag in ('activity',) else '"false"'
-        content = re.sub(
-            rf'(<{tag}\b(?![^>]*android:exported)[^>]*?)(\s*/?>)',
-            lambda m, d=default: m.group(1) + f' android:exported={d}' + m.group(2),
-            content, flags=re.DOTALL
-        )
-
-    # Fix 4: POST_NOTIFICATIONS needs tools:targetApi="33" on Android 13+
-    content = content.replace(
-        'android.permission.POST_NOTIFICATIONS"',
-        'android.permission.POST_NOTIFICATIONS" android:minSdkVersion="33"'
+        r'<(?:service|receiver|provider)\s[^>]*/?>',
+        add_exported_false, content, flags=re.DOTALL
     )
 
     if content != original:
-        open(path, 'w').write(content)
-        print(f"[WBS hook] Patched: {path}")
-    else:
-        print(f"[WBS hook] No changes needed: {path}")
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        print(f'[WBS hook] Patched {os.path.basename(path)}')
+
+
+def _find_and_patch(base_dir):
+    count = 0
+    for root, dirs, files in os.walk(base_dir):
+        # Skip hidden dirs and node_modules
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for fname in files:
+            if fname == 'AndroidManifest.xml':
+                _patch_manifest(os.path.join(root, fname))
+                count += 1
+    return count
 
 
 def prebuild_arch(manager, arch):
-    """Called before each arch build."""
-    pass
+    print('[WBS hook] prebuild_arch — patching manifests...')
+    try:
+        n = _find_and_patch(manager.ctx.build_dir)
+        print(f'[WBS hook] Processed {n} manifest(s)')
+    except Exception as e:
+        print(f'[WBS hook] Warning (non-fatal): {e}')
 
 
 def postbuild_arch(manager, arch):
-    """Called after each arch build — patch all manifests."""
-    print("[WBS hook] Patching manifests for Android 12-16 compatibility...")
+    print('[WBS hook] postbuild_arch — re-patching manifests...')
     try:
-        manifests = _find_manifests(manager.ctx)
-        print(f"[WBS hook] Found {len(manifests)} manifest(s)")
-        for m in manifests:
-            _patch_manifest(m)
+        n = _find_and_patch(manager.ctx.build_dir)
+        print(f'[WBS hook] Processed {n} manifest(s)')
     except Exception as e:
-        print(f"[WBS hook] Warning: {e}")
+        print(f'[WBS hook] Warning (non-fatal): {e}')

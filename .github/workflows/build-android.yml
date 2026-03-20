@@ -6,20 +6,19 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-apk:
-    name: Build APK
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
+      # Download Arabic font for proper Arabic rendering in Kivy
       - name: Download Arabic font
         run: |
           cd android/app
-          python3 -c "
-          import urllib.request, ssl
+          python3 - << 'PY'
+          import urllib.request, ssl, os
           ctx = ssl.create_default_context()
           ctx.check_hostname = False
           ctx.verify_mode = ssl.CERT_NONE
@@ -29,59 +28,59 @@ jobs:
           ]
           for url in urls:
               try:
-                  req = urllib.request.Request(url, headers={'User-Agent':'Mozilla/5.0'})
-                  with urllib.request.urlopen(req, timeout=20, context=ctx) as r:
+                  req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                  with urllib.request.urlopen(req, timeout=30, context=ctx) as r:
                       data = r.read()
                   if len(data) > 50000:
-                      open('NotoNaskhArabic.ttf','wb').write(data)
-                      print(f'Font OK: {len(data):,} bytes')
+                      open('NotoNaskhArabic.ttf', 'wb').write(data)
+                      print(f'Font OK: {len(data):,} bytes from {url}')
                       break
               except Exception as e:
-                  print(f'Failed: {e}')
-          "
-          ls -lh *.ttf 2>/dev/null || echo "Font download failed - will use default"
+                  print(f'URL failed: {e}')
+          else:
+              print('WARNING: No font downloaded — Arabic will use fallback font')
+          PY
+          ls -lh *.ttf 2>/dev/null || true
 
-      - name: Pre-accept SDK licenses
+      # Write ALL license hashes (prevents interactive SDK license prompts)
+      - name: Accept SDK licenses
         run: |
           SDK="$HOME/.buildozer/android/platform/android-sdk"
           mkdir -p "$SDK/licenses"
-          printf '%s\n' \
-            "24333f8a63b6825ea9c5514f83c2829b004d1fee" \
-            "d56f5187479451eabf01fb78af6dfcb131a6481e" \
-            "8933bad161af4178b1185d1a37fbf41ea5269c55" \
-            > "$SDK/licenses/android-sdk-license"
-          printf '%s\n' \
-            "84831b9409646a918e30573bab4c9c91346d8abd" \
-            "504667f4c0de7af1a06de9f4b1727b84351f2910" \
-            > "$SDK/licenses/android-sdk-preview-license"
-          printf '%s\n' "601085b94cd77f0b54ff86406957099ebe79c4d7" \
-            > "$SDK/licenses/android-googletv-license"
-          printf '%s\n' "33b6a2b64607f11b759f320ef9dff4ae5c47d97a" \
-            > "$SDK/licenses/google-gdk-license"
-          printf '%s\n' "79120722343a6f314e0719f863036c702b0e6b2a" \
-            > "$SDK/licenses/android-sdk-arm-dbt-license"
+          cat > "$SDK/licenses/android-sdk-license" << 'HASH'
+          24333f8a63b6825ea9c5514f83c2829b004d1fee
+          d56f5187479451eabf01fb78af6dfcb131a6481e
+          8933bad161af4178b1185d1a37fbf41ea5269c55
+          HASH
+          cat > "$SDK/licenses/android-sdk-preview-license" << 'HASH'
+          84831b9409646a918e30573bab4c9c91346d8abd
+          504667f4c0de7af1a06de9f4b1727b84351f2910
+          HASH
+          echo "601085b94cd77f0b54ff86406957099ebe79c4d7" > "$SDK/licenses/android-googletv-license"
+          echo "33b6a2b64607f11b759f320ef9dff4ae5c47d97a" > "$SDK/licenses/google-gdk-license"
+          echo "79120722343a6f314e0719f863036c702b0e6b2a" > "$SDK/licenses/android-sdk-arm-dbt-license"
 
       - name: Cache buildozer
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
-          key: buildozer-${{ hashFiles('android/app/buildozer.spec') }}-v18
+          key: buildozer-${{ hashFiles('android/app/buildozer.spec','android/app/recipes/kivy/__init__.py') }}-v19
           restore-keys: buildozer-
 
-      - name: Build APK (Docker)
+      - name: Build APK
         run: |
-          # Re-write licenses into the volume
+          # Re-write licenses into the mounted volume
           SDK="$HOME/.buildozer/android/platform/android-sdk"
           mkdir -p "$SDK/licenses"
-          printf '%s\n' \
-            "24333f8a63b6825ea9c5514f83c2829b004d1fee" \
-            "d56f5187479451eabf01fb78af6dfcb131a6481e" \
-            "8933bad161af4178b1185d1a37fbf41ea5269c55" \
-            > "$SDK/licenses/android-sdk-license"
-          printf '%s\n' \
-            "84831b9409646a918e30573bab4c9c91346d8abd" \
-            "504667f4c0de7af1a06de9f4b1727b84351f2910" \
-            > "$SDK/licenses/android-sdk-preview-license"
+          cat > "$SDK/licenses/android-sdk-license" << 'HASH'
+          24333f8a63b6825ea9c5514f83c2829b004d1fee
+          d56f5187479451eabf01fb78af6dfcb131a6481e
+          8933bad161af4178b1185d1a37fbf41ea5269c55
+          HASH
+          cat > "$SDK/licenses/android-sdk-preview-license" << 'HASH'
+          84831b9409646a918e30573bab4c9c91346d8abd
+          504667f4c0de7af1a06de9f4b1727b84351f2910
+          HASH
 
           docker run --rm \
             -v "${{ github.workspace }}/android/app":/home/user/hostcwd \
@@ -89,52 +88,54 @@ jobs:
             ghcr.io/kivy/buildozer:latest \
             android debug 2>&1
 
-      - name: Find APK
+      - name: Locate APK
         id: apk
         run: |
-          F=$(find android/app/bin -name "*.apk" 2>/dev/null | head -1)
-          if [ -n "$F" ]; then
-            echo "path=$F" >> "$GITHUB_OUTPUT"
-            echo "name=$(basename $F)" >> "$GITHUB_OUTPUT"
-            SIZE=$(du -h "$F" | cut -f1)
-            echo "✅ APK: $F ($SIZE)"
-          else
-            echo "❌ No APK produced"
-            find android/app/.buildozer -name "*.log" 2>/dev/null \
-              | head -3 | xargs tail -100 2>/dev/null || true
+          APK=$(find android/app/bin -name "*.apk" 2>/dev/null | head -1)
+          if [ -z "$APK" ]; then
+            echo "❌ Build failed — no APK produced"
+            echo "Last 100 lines of build output:"
+            find android/app/.buildozer -name "*.log" 2>/dev/null | head -3 | xargs tail -100 2>/dev/null || true
             exit 1
           fi
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename $APK)" >> "$GITHUB_OUTPUT"
+          echo "size=$(du -h $APK | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "✅ APK: $APK ($(du -h $APK | cut -f1))"
 
-      - name: Upload APK
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WBSBerlin-APK-v5.3
+          name: WBSBerlin-v5.4-APK
           path: ${{ steps.apk.outputs.path }}
-          retention-days: 60
+          retention-days: 90
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "android-v${{ github.run_number }}"
-          name: "📱 WBS Berlin APK v5.3 — Build #${{ github.run_number }}"
+          tag_name: "v5.4.${{ github.run_number }}"
+          name: "📱 WBS Berlin v5.4 — Build #${{ github.run_number }}"
           body: |
-            ## 📥 WBS Berlin v5.3
+            ## WBS Berlin v5.4 — Final Release
 
-            **مُحسَّن لـ Samsung A53 5G + Android 16 + OneUI 8**
+            ### ✅ جاهز للتثبيت على Samsung A53 5G + Android 16
 
-            **الإصلاحات:**
-            - ✅ FOREGROUND_SERVICE_DATA_SYNC — مطلوب في Android 14+
-            - ✅ target API 34 — متوافق مع Android 14/15/16
-            - ✅ يدعم arm64-v8a + armeabi-v7a
-            - ✅ minapi 23 — يدعم Android 6+
-            - ✅ WAKE_LOCK permission مضافة
+            ### الإصلاحات النهائية:
+            - `android:exported="true"` مضافة على Activity (سبب الشاشة السوداء)
+            - Hook ينظّف الـ AndroidManifest بعد توليده
+            - لا `FOREGROUND_SERVICE` (كانت تسبب ANR crash)
+            - يستهدف API 34 لتوافق Android 14/15/16
+            - خط عربي مدمج (NotoNaskhArabic)
 
-            **التثبيت:**
-            1. حمّل APK
-            2. الإعدادات → الأمان → مصادر غير معروفة ✅
-            3. افتح APK
+            ### التثبيت:
+            ```
+            1. حمّل WBS-Berlin-v5.4.apk أدناه
+            2. الإعدادات ← الأمان ← تثبيت تطبيقات غير معروفة ✅
+            3. افتح الملف وثبّته
+            4. الإعدادات ← تطبيقات ← WBS Berlin ← البطارية ← غير مقيد
+            ```
 
-            Built from `${{ github.sha }}`
+            **SHA:** `${{ github.sha }}`
           files: ${{ steps.apk.outputs.path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
