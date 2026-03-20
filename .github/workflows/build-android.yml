@@ -15,36 +15,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download Arabic font (Noto Naskh Arabic)
+      - name: Download Arabic font
         run: |
-          # Download via pip fonttools approach — reliable
           cd android/app
-          # Try multiple sources
-          curl -fsSL "https://fonts.gstatic.com/s/notonaskharabic/v33/RrQ5bpV-9Dd1b1OAGA6M9PkyDuVBePeKNaxcsss0Y7bwvc5krK0z9_Mnuw.ttf" \
-            -o NotoNaskhArabic.ttf 2>/dev/null || \
-          wget -q "https://fonts.gstatic.com/s/notonaskharabic/v33/RrQ5bpV-9Dd1b1OAGA6M9PkyDuVBePeKNaxcsss0Y7bwvc5krK0z9_Mnuw.ttf" \
-            -O NotoNaskhArabic.ttf 2>/dev/null || \
           python3 -c "
           import urllib.request, ssl
           ctx = ssl.create_default_context()
-          ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+          ctx.check_hostname = False
+          ctx.verify_mode = ssl.CERT_NONE
           urls = [
             'https://fonts.gstatic.com/s/notonaskharabic/v33/RrQ5bpV-9Dd1b1OAGA6M9PkyDuVBePeKNaxcsss0Y7bwvc5krK0z9_Mnuw.ttf',
             'https://github.com/notofonts/arabic/releases/download/NotoNaskhArabic-v2.015/NotoNaskhArabic.ttf',
           ]
           for url in urls:
-            try:
-              req = urllib.request.Request(url, headers={'User-Agent':'Mozilla/5.0'})
-              with urllib.request.urlopen(req, timeout=20, context=ctx) as r:
-                data = r.read()
-                if len(data) > 10000:
-                  open('NotoNaskhArabic.ttf','wb').write(data)
-                  print(f'Downloaded: {len(data):,} bytes')
-                  break
-            except Exception as e:
-              print(f'Failed {url}: {e}')
+              try:
+                  req = urllib.request.Request(url, headers={'User-Agent':'Mozilla/5.0'})
+                  with urllib.request.urlopen(req, timeout=20, context=ctx) as r:
+                      data = r.read()
+                  if len(data) > 50000:
+                      open('NotoNaskhArabic.ttf','wb').write(data)
+                      print(f'Font OK: {len(data):,} bytes')
+                      break
+              except Exception as e:
+                  print(f'Failed: {e}')
           "
-          ls -lh *.ttf 2>/dev/null || echo "No font downloaded (will use default)"
+          ls -lh *.ttf 2>/dev/null || echo "Font download failed - will use default"
 
       - name: Pre-accept SDK licenses
         run: |
@@ -63,16 +58,19 @@ jobs:
             > "$SDK/licenses/android-googletv-license"
           printf '%s\n' "33b6a2b64607f11b759f320ef9dff4ae5c47d97a" \
             > "$SDK/licenses/google-gdk-license"
+          printf '%s\n' "79120722343a6f314e0719f863036c702b0e6b2a" \
+            > "$SDK/licenses/android-sdk-arm-dbt-license"
 
       - name: Cache buildozer
         uses: actions/cache@v4
         with:
           path: ~/.buildozer
-          key: buildozer-${{ hashFiles('android/app/buildozer.spec') }}-v16
+          key: buildozer-${{ hashFiles('android/app/buildozer.spec') }}-v18
           restore-keys: buildozer-
 
       - name: Build APK (Docker)
         run: |
+          # Re-write licenses into the volume
           SDK="$HOME/.buildozer/android/platform/android-sdk"
           mkdir -p "$SDK/licenses"
           printf '%s\n' \
@@ -98,18 +96,19 @@ jobs:
           if [ -n "$F" ]; then
             echo "path=$F" >> "$GITHUB_OUTPUT"
             echo "name=$(basename $F)" >> "$GITHUB_OUTPUT"
-            echo "✅ APK: $F — $(du -h $F | cut -f1)"
+            SIZE=$(du -h "$F" | cut -f1)
+            echo "✅ APK: $F ($SIZE)"
           else
-            echo "❌ No APK"
+            echo "❌ No APK produced"
             find android/app/.buildozer -name "*.log" 2>/dev/null \
-              | head -2 | xargs tail -80 2>/dev/null || true
+              | head -3 | xargs tail -100 2>/dev/null || true
             exit 1
           fi
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: WBSBerlin-APK-v4.1
+          name: WBSBerlin-APK-v5.3
           path: ${{ steps.apk.outputs.path }}
           retention-days: 60
 
@@ -117,21 +116,25 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "android-v${{ github.run_number }}"
-          name: "📱 WBS Berlin APK v4.1 — Build #${{ github.run_number }}"
+          name: "📱 WBS Berlin APK v5.3 — Build #${{ github.run_number }}"
           body: |
-            ## 📥 WBS Berlin v4.1
+            ## 📥 WBS Berlin v5.3
 
-            **الإصلاحات في هذا الإصدار:**
-            - ✅ إصلاح شاشة سوداء + خروج فوري
-            - ✅ مسار تخزين صحيح (user_data_dir)
-            - ✅ خط عربي مضمّن
-            - ✅ شاشة خطأ بدلاً من crash صامت
-            - ✅ الخدمة الخلفية تبدأ بتأخير 3 ثوانٍ
+            **مُحسَّن لـ Samsung A53 5G + Android 16 + OneUI 8**
+
+            **الإصلاحات:**
+            - ✅ FOREGROUND_SERVICE_DATA_SYNC — مطلوب في Android 14+
+            - ✅ target API 34 — متوافق مع Android 14/15/16
+            - ✅ يدعم arm64-v8a + armeabi-v7a
+            - ✅ minapi 23 — يدعم Android 6+
+            - ✅ WAKE_LOCK permission مضافة
 
             **التثبيت:**
-            1. حمّل APK أدناه
+            1. حمّل APK
             2. الإعدادات → الأمان → مصادر غير معروفة ✅
             3. افتح APK
+
+            Built from `${{ github.sha }}`
           files: ${{ steps.apk.outputs.path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
