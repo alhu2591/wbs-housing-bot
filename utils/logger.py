@@ -1,7 +1,9 @@
 import logging
 import logging.handlers
 import os
-from config.settings import LOG_DIR
+
+_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG_DIR = os.getenv("LOG_DIR") or os.path.join(_ROOT_DIR, "logs")
 
 
 def setup_logging() -> None:

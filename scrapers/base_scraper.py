@@ -1,24 +1,28 @@
 """
-Base HTTP scraper — direct requests, no proxy dependency.
-Designed for local execution where IPs are not blocked.
-Retry + exponential backoff + User-Agent rotation built in.
+Async HTTP scraper (Termux-friendly).
+
+Uses `httpx.AsyncClient` with:
+- realistic Android headers
+- 3-attempt retry with exponential backoff
+- graceful failure (returns `None` instead of crashing)
 """
 import asyncio
 import logging
 import random
+import os
 from typing import Optional
 
 import httpx
-from config.settings import REQUEST_TIMEOUT, MAX_RETRIES, RETRY_WAIT_MIN, PROXY_URL
 
 logger = logging.getLogger(__name__)
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
+    # Android Chrome (mobile)
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro Build/UP1A.240305.004; wv) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 13; SM-G991B Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 12; Redmi Note 10 Build/RKQ1.210919.002; wv) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
+    # Occasional alternative UA strings
+    "Mozilla/5.0 (Linux; Android 11; SM-A515F Build/RP1A.200720.012; wv) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
 ]
 
 
@@ -35,6 +39,25 @@ def random_headers() -> dict:
         "Sec-Fetch-Site":          "none",
         "Upgrade-Insecure-Requests": "1",
     }
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
+def _env_str(name: str) -> str | None:
+    v = os.getenv(name)
+    return v if v else None
+
+
+# Termux-friendly defaults (overridable via env vars)
+REQUEST_TIMEOUT: int = _env_int("REQUEST_TIMEOUT", 20)
+MAX_RETRIES: int = _env_int("MAX_RETRIES", 3)
+RETRY_WAIT_MIN: int = _env_int("RETRY_WAIT_MIN", 2)
+PROXY_URL: str | None = _env_str("PROXY_URL")
 
 
 def build_client(timeout: int = 30) -> httpx.AsyncClient:
@@ -58,20 +81,20 @@ async def fetch(
     render_js: bool = False,   # kept for signature compatibility, ignored
     direct: bool = False,      # kept for signature compatibility, ignored
 ) -> Optional[str]:
-    """Fetch URL with retry + exponential backoff."""
+    """Fetch URL with 3-attempt retry + exponential backoff."""
     own = client is None
     if own:
-        client = build_client()
+        client = build_client(timeout=REQUEST_TIMEOUT)
     try:
         for attempt in range(MAX_RETRIES):
             try:
-                resp = await client.get(url, headers=random_headers())
+                resp = await client.get(url)
                 resp.raise_for_status()
                 return resp.text
             except httpx.HTTPStatusError as e:
                 code = e.response.status_code
                 if code in (403, 429, 503) and attempt < MAX_RETRIES - 1:
-                    wait = RETRY_WAIT_MIN * (2 ** attempt) + random.uniform(0, 1)
+                    wait = RETRY_WAIT_MIN * (2 ** attempt) + random.uniform(0, 0.8)
                     logger.warning("HTTP %d %s — retry %d in %.1fs", code, url[:55], attempt + 1, wait)
                     await asyncio.sleep(wait)
                 else:
@@ -100,12 +123,29 @@ async def fetch_json(
     """Fetch JSON endpoint."""
     own = client is None
     if own:
-        client = build_client(timeout=20)
+        client = build_client(timeout=REQUEST_TIMEOUT)
     try:
-        hdrs = {**random_headers(), "Accept": "application/json, */*"}
-        resp = await client.get(url, headers=hdrs)
-        resp.raise_for_status()
-        return resp.json()
+        for attempt in range(MAX_RETRIES):
+            try:
+                resp = await client.get(url, headers={"Accept": "application/json, */*"})
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code
+                if code in (403, 429, 503) and attempt < MAX_RETRIES - 1:
+                    wait = RETRY_WAIT_MIN * (2 ** attempt) + random.uniform(0, 0.8)
+                    logger.warning("HTTP %d %s — retry %d in %.1fs", code, url[:55], attempt + 1, wait)
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                if attempt < MAX_RETRIES - 1:
+                    wait = RETRY_WAIT_MIN * (2 ** attempt)
+                    logger.warning("Timeout %s — retry in %.1fs", url[:55], wait)
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+        return None
     except Exception as e:
         logger.warning("fetch_json failed %s → %s", url[:60], e)
         return None

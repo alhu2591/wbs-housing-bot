@@ -1,0 +1,18 @@
+{
+  "city": "Berlin",
+  "max_price": 600,
+  "wbs_filter": [
+    "wbs 100",
+    "wbs 140",
+    "wbs 160",
+    "wbs 180",
+    "wbs 200",
+    "wbs erforderlich",
+    "wbs-berechtigung",
+    "wohnberechtigungsschein",
+    "sozialer wohnungsbau",
+    "geförderte wohnung"
+  ],
+  "interval_minutes": 12
+}
+

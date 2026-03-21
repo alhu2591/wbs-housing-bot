@@ -4,12 +4,38 @@ All scrapers import from here.
 """
 import re
 import logging
-from filters.wbs_filter import make_id
+import hashlib
+from urllib.parse import urlparse, urlunparse, urlencode, parse_qs
 
 logger = logging.getLogger(__name__)
 
 # Patterns that indicate price is not actually a number
 _NON_PRICE = re.compile(r"^(preis auf anfrage|auf anfrage|n\.a\.|nan|none|-|—|–)$", re.I)
+
+_TRACKING_PARAMS = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+    "ref", "referrer", "source", "fbclid", "gclid", "_ga", "mc_cid",
+    "tracking",
+}
+
+
+def normalize_url(url: str) -> str:
+    """Remove common tracking query parameters to keep dedup stable."""
+    try:
+        parsed = urlparse(url)
+        qs = {
+            k: v
+            for k, v in parse_qs(parsed.query).items()
+            if k.lower() not in _TRACKING_PARAMS
+        }
+        return urlunparse(parsed._replace(query=urlencode(qs, doseq=True), fragment=""))
+    except Exception:
+        return url
+
+
+def make_id(url: str) -> str:
+    """Deterministic short hash for a listing URL."""
+    return hashlib.sha256(normalize_url(url).encode()).hexdigest()[:16]
 
 
 def clean_text(text: str, max_len: int = 80) -> str:

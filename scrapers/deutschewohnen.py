@@ -1,8 +1,8 @@
 """Deutsche Wohnen — JS-rendered HTML scraper."""
 import logging
-from bs4 import BeautifulSoup
 from .base_scraper import fetch
 from ._common import build_listing, parse_price, parse_rooms
+from utils.soup import make_soup
 
 logger = logging.getLogger(__name__)
 SOURCE = "deutschewohnen"
@@ -20,7 +20,7 @@ async def scrape() -> list[dict]:
             html = await fetch(url, render_js=True)
             if not html or len(html) < 1000:
                 continue
-            soup = BeautifulSoup(html, "lxml")
+            soup = make_soup(html)
             cards = (
                 soup.select("[class*='search-result']")
                 or soup.select("[class*='property-card']")

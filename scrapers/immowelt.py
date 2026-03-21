@@ -1,8 +1,8 @@
 """Immowelt — JS-rendered HTML scraper."""
 import logging
-from bs4 import BeautifulSoup
 from .base_scraper import fetch
 from ._common import build_listing, parse_price, parse_rooms
+from utils.soup import make_soup
 
 logger = logging.getLogger(__name__)
 SOURCE = "immowelt"
@@ -16,7 +16,7 @@ async def scrape() -> list[dict]:
         html = await fetch(URL, render_js=True)
         if not html or len(html) < 1000:
             return results
-        soup = BeautifulSoup(html, "lxml")
+        soup = make_soup(html)
         cards = (
             soup.select("[class*='EstateItem']")
             or soup.select("[data-testid*='estate']")

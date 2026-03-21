@@ -2,9 +2,9 @@
 Gewobag — WP REST API first, JS-rendered HTML fallback.
 """
 import logging
-from bs4 import BeautifulSoup
 from .base_scraper import fetch, fetch_json, build_client
 from ._common import build_listing, parse_price, parse_rooms
+from utils.soup import make_soup
 
 logger = logging.getLogger(__name__)
 SOURCE = "gewobag"
@@ -59,7 +59,7 @@ async def scrape() -> list[dict]:
         )
         if not html or len(html) < 500:
             return results
-        soup = BeautifulSoup(html, "lxml")
+        soup = make_soup(html)
         cards = (
             soup.select("article.angebot, .angebot-item, [class*='angebot']")
             or soup.select("[class*='listing'], [class*='immo'], [class*='wohnung']")

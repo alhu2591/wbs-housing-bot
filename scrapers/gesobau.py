@@ -1,8 +1,8 @@
 """Gesobau Berlin — government housing company."""
 import logging
-from bs4 import BeautifulSoup
 from .base_scraper import fetch, fetch_json, build_client
 from ._common import build_listing, parse_price, parse_rooms
+from utils.soup import make_soup
 
 logger = logging.getLogger(__name__)
 SOURCE = "gesobau"
@@ -26,7 +26,7 @@ async def scrape() -> list[dict]:
             if results: break
             html = await fetch(url, render_js=False)
             if not html or len(html) < 500: continue
-            soup = BeautifulSoup(html, "lxml")
+            soup = make_soup(html)
             for card in soup.select("[class*='apartment'],[class*='wohnung'],[class*='listing'],article"):
                 a = card.select_one("a[href]")
                 if not a: continue

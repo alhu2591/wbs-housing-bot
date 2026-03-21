@@ -2,15 +2,18 @@
 OG Image fetcher — extracts preview image from any listing URL.
 Used to show apartment photos inside Telegram notifications.
 """
+import asyncio
 import logging
 import httpx
-from bs4 import BeautifulSoup
+from utils.soup import make_soup
 
 logger = logging.getLogger(__name__)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-    "Accept": "text/html,*/*",
+    # Mobile UA to reduce blocks and better emulate Termux browsing
+    "User-Agent": "Mozilla/5.0 (Linux; Android 14; Mobile; wv) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
 }
 
 # OG / meta selectors in priority order
@@ -46,39 +49,48 @@ async def fetch_og_image(url: str) -> str | None:
     """
     if not url:
         return None
-    try:
-        async with httpx.AsyncClient(
-            headers=HEADERS,
-            timeout=8,           # fast — if no image in 8s, skip it
-            follow_redirects=True,
-        ) as client:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                return None
-            html = resp.text
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(
+                headers=HEADERS,
+                timeout=8,           # fast — if no image in 8s, skip it
+                follow_redirects=True,
+            ) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    if attempt < 2:
+                        await asyncio.sleep(2 * (attempt + 1))
+                        continue
+                    return None
+                html = resp.text
 
-        soup = BeautifulSoup(html, "lxml")
+            soup = make_soup(html)
 
-        # 1. Try OG / meta tags (most reliable)
-        for sel in IMAGE_SELECTORS:
-            tag = soup.select_one(sel)
-            if tag:
-                src = tag.get("content", "").strip()
-                if src.startswith("http"):
-                    logger.debug("OG image found via %s: %s", sel, src[:60])
-                    return src
-
-        # 2. Try inline img tags
-        for sel in IMG_CSS:
-            tag = soup.select_one(sel)
-            if tag:
-                for attr in ("src", "data-src", "data-lazy-src", "data-original"):
-                    src = tag.get(attr, "").strip()
-                    if src.startswith("http") and not src.endswith(".gif"):
-                        logger.debug("Inline image via %s: %s", sel, src[:60])
+            # 1. Try OG / meta tags (most reliable)
+            for sel in IMAGE_SELECTORS:
+                tag = soup.select_one(sel)
+                if tag:
+                    src = tag.get("content", "").strip()
+                    if src.startswith("http"):
+                        logger.debug("OG image found via %s: %s", sel, src[:60])
                         return src
 
-    except Exception as e:
-        logger.debug("fetch_og_image failed for %s: %s", url[:60], e)
+            # 2. Try inline img tags
+            for sel in IMG_CSS:
+                tag = soup.select_one(sel)
+                if tag:
+                    for attr in ("src", "data-src", "data-lazy-src", "data-original"):
+                        src = tag.get(attr, "").strip()
+                        if src.startswith("http") and not src.endswith(".gif"):
+                            logger.debug("Inline image via %s: %s", sel, src[:60])
+                            return src
+
+            return None
+
+        except Exception as e:
+            if attempt < 2:
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+            logger.debug("fetch_og_image failed for %s: %s", url[:60], e)
 
     return None

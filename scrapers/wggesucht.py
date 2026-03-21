@@ -1,8 +1,8 @@
 """WG-Gesucht — Berlin listings."""
 import logging
-from bs4 import BeautifulSoup
 from .base_scraper import fetch
 from ._common import build_listing, parse_price
+from utils.soup import make_soup
 
 logger = logging.getLogger(__name__)
 SOURCE = "wggesucht"
@@ -16,7 +16,7 @@ async def scrape() -> list[dict]:
         html = await fetch(URL, render_js=False)
         if not html or len(html) < 1000:
             return results
-        soup = BeautifulSoup(html, "lxml")
+        soup = make_soup(html)
         cards = soup.select(".wgg_card, .offer_list_item, article[id^='liste-'], .list-body")
         for card in cards:
             a = (card.select_one("a[href*='/wohnungen-in']")

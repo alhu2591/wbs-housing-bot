@@ -1,8 +1,8 @@
 """Degewo — JSON API + HTML fallback."""
 import logging
-from bs4 import BeautifulSoup
 from .base_scraper import fetch, fetch_json, build_client
 from ._common import build_listing, parse_price, parse_rooms
+from utils.soup import make_soup
 
 logger = logging.getLogger(__name__)
 SOURCE = "degewo"
@@ -43,7 +43,7 @@ async def scrape() -> list[dict]:
         if not results:
             html = await fetch(f"{BASE}/de/properties?property_type_id=1&categories[]=WBS", render_js=True)
             if html and len(html) >= 500:
-                soup = BeautifulSoup(html, "lxml")
+                soup = make_soup(html)
                 for card in soup.select("[class*='immo'],[class*='listing'],[class*='property'],article"):
                     a = card.select_one("a[href]")
                     if not a:

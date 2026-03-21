@@ -1,202 +1,239 @@
 """
-WBS Housing Bot — Main Entry Point
-Works locally (python run_local.py) and on any server.
+WBS Housing Bot — Termux-friendly minimal CLI + Telegram bot.
+
+Run:
+  BOT_TOKEN=... CHAT_ID=... python main.py
+
+Optional:
+  python main.py --test-scrape
 """
+
+from __future__ import annotations
+
+import argparse
 import asyncio
 import logging
-import logging.handlers
+import os
 import signal
-import sys
+import time
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
-from telegram.constants import ParseMode
-from telegram.error import TelegramError, RetryAfter, NetworkError, TimedOut
+from telegram.error import NetworkError, RetryAfter, TimedOut, TelegramError
 
-from utils import setup_logging, start_health_server, set_stats_fn
-from database import init_db, init_health_table, get_stats
-from bot import build_app, format_listing
-from bot.handlers import BOT_COMMANDS
-from scheduler import run_once, set_notify_callback
-from config.settings import CHAT_ID, BOT_TOKEN, SCRAPE_INTERVAL
+from bot.handlers import BOT_COMMANDS, build_app, format_listing, set_config as set_bot_config
+from scraper.scrape_cycle import scrape_new_listings
+from utils.config_loader import load_config
+from utils.logger import setup_logging
+from utils.seen_store import make_seen_entry, persist_seen
+
 
 setup_logging()
 logger = logging.getLogger(__name__)
 
 
-async def _send_startup_message(app) -> None:
-    try:
-        stats = await get_stats()
-        await app.bot.send_message(
-            chat_id=CHAT_ID,
-            text=(
-                "🟢 *البوت بدأ العمل*\n"
-                "━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🔄 كل {SCRAPE_INTERVAL} دقيقة\n"
-                f"🗃 محفوظ: {stats.get('db_size', 0)}\n"
-                f"📨 مُرسل: {stats.get('total_sent', 0)}\n\n"
-                "استخدم /status · /help"
-            ),
-            parse_mode=ParseMode.MARKDOWN,
-        )
-    except TelegramError as e:
-        logger.warning("Startup message failed: %s", e)
+def _get_env(name: str) -> str:
+    return os.getenv(name, "").strip()
 
 
-async def _heartbeat() -> None:
+async def _send_one(app, chat_id: str, listing: dict[str, Any], max_attempts: int = 3) -> bool:
+    """Send a listing with retry (no crashes)."""
+    text, keyboard = format_listing(listing)
+
+    for attempt in range(max_attempts):
+        try:
+            await app.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+            return True
+        except RetryAfter as e:
+            await asyncio.sleep((getattr(e, "retry_after", 0) or 0) + 1)
+        except (NetworkError, TimedOut) as e:
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(2 * (attempt + 1))
+            else:
+                logger.error("Telegram network error (final): %s", e)
+        except TelegramError as e:
+            logger.error("Telegram error: %s", e)
+            return False
+        except Exception as e:
+            logger.error("Telegram send failed: %s", e, exc_info=True)
+
+    return False
+
+
+async def _job_cycle(app, chat_id: str | None, cfg: dict[str, Any], seen_json_path: str) -> None:
+    started = time.monotonic()
     try:
-        stats = await get_stats()
-        logger.info(
-            "💓 Heartbeat — cycles: %d | sent: %d | db: %d",
-            stats.get("total_cycles", 0),
-            stats.get("total_sent", 0),
-            stats.get("db_size", 0),
-        )
+        listings = await scrape_new_listings(cfg, seen_json_path)
     except Exception as e:
-        logger.error("Heartbeat error: %s", e)
+        logger.error("scrape_new_listings crashed: %s", e, exc_info=True)
+        return
+
+    if not listings:
+        logger.info("Cycle done: no new matches (%.1fs).", time.monotonic() - started)
+        return
+
+    max_per_cycle = int(cfg.get("max_per_cycle") or 10)
+    to_send = listings[:max_per_cycle]
+
+    if not app or not chat_id:
+        logger.info("Cycle matched %d listings (no Telegram token configured).", len(to_send))
+        for l in to_send:
+            logger.info("MATCH: %s | %s | %s | %s", l.get("title"), l.get("price"), l.get("location"), l.get("url"))
+        return
+
+    logger.info("Cycle matched %d new listings; sending…", len(to_send))
+    sent_ids: list[dict[str, Any]] = []
+
+    for listing in to_send:
+        try:
+            ok = await _send_one(app, chat_id, listing)
+            if ok:
+                sent_ids.append(listing)
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            logger.error("Send loop error: %s", e, exc_info=True)
+
+    if sent_ids:
+        try:
+            new_entries = {}
+            for l in sent_ids:
+                entry = make_seen_entry(l)
+                if entry:
+                    new_entries.update(entry)
+            if new_entries:
+                persist_seen(seen_json_path, new_entries)
+        except Exception as e:
+            logger.error("Failed to persist seen.json: %s", e, exc_info=True)
+
+    logger.info(
+        "Cycle done: sent=%d matched=%d (%.1fs).",
+        len(sent_ids),
+        len(to_send),
+        time.monotonic() - started,
+    )
 
 
-async def _error_handler(update, context) -> None:
-    logger.error("PTB error: %s", context.error, exc_info=context.error)
+async def _run_once_for_test(cfg: dict[str, Any], seen_json_path: str) -> None:
+    listings = await scrape_new_listings(cfg, seen_json_path)
+    if not listings:
+        logger.info("No new listings.")
+        return
+    for l in listings:
+        logger.info("TEST: %s | %s | %s | %s", l.get("title"), l.get("price"), l.get("location"), l.get("url"))
 
 
 async def main() -> None:
-    # ── Validate ──────────────────────────────────────────────────────────────
-    if not BOT_TOKEN:
-        logger.critical("Required env var BOT_TOKEN is missing. Exiting.")
-        sys.exit(1)
-    if not CHAT_ID:
-        logger.critical("Required env var CHAT_ID is missing. Exiting.")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="WBS Housing Bot (Termux-friendly)")
+    parser.add_argument("--test-scrape", action="store_true", help="Scrape once and log results (no Telegram).")
+    args = parser.parse_args()
 
-    # ── DB ────────────────────────────────────────────────────────────────────
-    await init_db()
-    await init_health_table()
+    cfg = load_config()
+    set_bot_config(cfg)
 
-    # ── Telegram app ──────────────────────────────────────────────────────────
-    app = build_app()
-    app.add_error_handler(_error_handler)
-    await app.initialize()
-    await app.start()
+    bot_token = _get_env("BOT_TOKEN")
+    chat_id = _get_env("CHAT_ID")
 
-    try:
-        await app.bot.set_my_commands(BOT_COMMANDS)
-    except TelegramError as e:
-        logger.warning("set_my_commands failed: %s", e)
+    root_dir = os.path.dirname(os.path.abspath(__file__))
+    seen_json_path = os.path.join(root_dir, "seen.json")
 
-    # ── Notify callback with retry ────────────────────────────────────────────
-    async def notify(listing: dict) -> None:
-        text, keyboard = format_listing(listing)
-        image_url = listing.get("image_url")
+    if args.test_scrape:
+        await _run_once_for_test(cfg, seen_json_path)
+        return
 
-        for attempt in range(3):
+    app = None
+    if bot_token and chat_id:
+        try:
+            app = build_app(bot_token)
+            app.add_error_handler(lambda update, context: logger.error("PTB error: %s", context.error, exc_info=True))
+            await app.initialize()
+            await app.start()
             try:
-                if image_url:
-                    try:
-                        await app.bot.send_photo(
-                            chat_id=CHAT_ID,
-                            photo=image_url,
-                            caption=text,
-                            parse_mode=ParseMode.MARKDOWN,
-                            reply_markup=keyboard,
-                        )
-                        return
-                    except TelegramError:
-                        image_url = None
+                await app.bot.set_my_commands(BOT_COMMANDS)
+            except Exception as e:
+                logger.warning("set_my_commands failed: %s", e)
+        except Exception as e:
+            logger.error("Failed to start Telegram app: %s", e, exc_info=True)
+            app = None
+    else:
+        logger.warning("BOT_TOKEN/CHAT_ID missing; running scrape-only mode.")
 
-                await app.bot.send_message(
-                    chat_id=CHAT_ID,
-                    text=text,
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=keyboard,
-                    disable_web_page_preview=False,
-                )
-                return
-
-            except RetryAfter as e:
-                await asyncio.sleep(e.retry_after + 1)
-            except (NetworkError, TimedOut) as e:
-                if attempt < 2:
-                    await asyncio.sleep(5 * (attempt + 1))
-                else:
-                    logger.error("notify failed after 3 attempts: %s", e)
-                    return
-            except TelegramError as e:
-                logger.error("notify: %s", e)
-                return
-
-    set_notify_callback(notify)
-
-    # ── Health server (for Railway/server deployments) ────────────────────────
-    set_stats_fn(get_stats)
-    asyncio.create_task(start_health_server(port=8080))
-
-    # ── Scheduler ─────────────────────────────────────────────────────────────
-    scheduler = AsyncIOScheduler(timezone="Europe/Berlin")
-
-    def _job_error(event):
-        logger.error("Scheduler job '%s' error: %s", event.job_id, event.exception)
-
-    def _job_missed(event):
-        logger.warning("Scheduler job '%s' missed", event.job_id)
-
-    scheduler.add_listener(_job_error,  EVENT_JOB_ERROR)
-    scheduler.add_listener(_job_missed, EVENT_JOB_MISSED)
-
+    interval_minutes = int(cfg["interval_minutes"])
+    scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(
-        run_once, "interval",
-        minutes=SCRAPE_INTERVAL,
-        id="scrape",
+        _job_cycle,
+        "interval",
+        minutes=interval_minutes,
         max_instances=1,
         coalesce=True,
+        args=[app, chat_id if bot_token and chat_id else None, cfg, seen_json_path],
+        id="scrape_cycle",
         misfire_grace_time=120,
     )
-    scheduler.add_job(_heartbeat, "interval", hours=1, id="heartbeat",
-                      misfire_grace_time=300)
     scheduler.start()
-    logger.info("✅ Scheduler every %d min", SCRAPE_INTERVAL)
 
-    # ── First scrape + startup message ────────────────────────────────────────
-    await _send_startup_message(app)
-    try:
-        await run_once()
-    except Exception as e:
-        logger.error("First scrape failed: %s", e)
+    # Immediate first run.
+    await _job_cycle(app, chat_id if bot_token and chat_id else None, cfg, seen_json_path)
 
-    # ── Polling ───────────────────────────────────────────────────────────────
-    logger.info("🤖 Bot polling…")
-    await app.updater.start_polling(
-        drop_pending_updates=True,
-        allowed_updates=["message", "callback_query"],
-        read_timeout=30,
-        write_timeout=30,
-        connect_timeout=15,
-        pool_timeout=15,
-    )
-
-    # ── Graceful shutdown ─────────────────────────────────────────────────────
     stop_event = asyncio.Event()
 
     def _handle_signal(*_):
-        logger.info("🛑 Shutdown signal")
+        logger.info("Shutdown signal received.")
         stop_event.set()
 
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, _handle_signal)
-        except (NotImplementedError, RuntimeError):
-            # Windows doesn't support add_signal_handler
+        except Exception:
             pass
+
+    poll_task = None
+    if app and chat_id:
+
+        async def _polling_supervisor() -> None:
+            try:
+                logger.info("Telegram polling started.")
+                await app.updater.start_polling(
+                    drop_pending_updates=True,
+                    allowed_updates=["message", "callback_query"],
+                    read_timeout=30,
+                    write_timeout=30,
+                    connect_timeout=15,
+                    pool_timeout=15,
+                )
+            except Exception as e:
+                logger.error("Polling crashed: %s", e, exc_info=True)
+
+        poll_task = asyncio.create_task(_polling_supervisor())
 
     await stop_event.wait()
 
-    logger.info("Stopping…")
+    logger.info("Stopping scheduler…")
     scheduler.shutdown(wait=False)
-    await app.updater.stop()
-    await app.stop()
-    await app.shutdown()
-    logger.info("👋 Stopped.")
+
+    if app:
+        try:
+            await app.updater.stop()
+        except Exception:
+            pass
+        try:
+            await app.stop()
+            await app.shutdown()
+        except Exception:
+            pass
+
+    if poll_task:
+        try:
+            await poll_task
+        except Exception:
+            pass
+
+    logger.info("Stopped.")
 
 
 if __name__ == "__main__":
@@ -204,3 +241,17 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+
+"""
+WBS Housing Bot — Termux-friendly minimal CLI + Telegram bot.
+
+Run:
+  BOT_TOKEN=... CHAT_ID=... python main.py
+
+Optional:
+  python main.py --test-scrape
+"""
+
+# NOTE: legacy/duplicated content was appended to the original file during refactor.
+# It is intentionally disabled at runtime by `raise SystemExit` above, but we must also
+
