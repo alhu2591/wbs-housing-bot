@@ -1,9 +1,13 @@
 {
   "city": "Berlin",
+  "districts": [],
   "max_price": 700.0,
   "min_size": 30.0,
   "rooms": 1.0,
   "wbs_required": true,
+  "wbs_level": null,
+  "jobcenter_required": false,
+  "wohnungsgilde_required": false,
   "interval_minutes": 10,
   "keywords_include": [],
   "keywords_exclude": [],
@@ -29,7 +33,8 @@
     "immoscout",
     "wggesucht",
     "ebay_kleinanzeigen",
-    "immowelt"
+    "immowelt",
+    "immonet"
   ],
   "max_images": 5,
   "max_per_cycle": 5,

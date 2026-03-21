@@ -1,9 +1,13 @@
 {
   "city": "Berlin",
+  "districts": [],
   "max_price": 700,
   "min_size": 30,
   "rooms": 1,
   "wbs_required": true,
+  "wbs_level": null,
+  "jobcenter_required": false,
+  "wohnungsgilde_required": false,
   "interval_minutes": 10,
   "keywords_include": [],
   "keywords_exclude": [],

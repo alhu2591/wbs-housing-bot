@@ -4,6 +4,7 @@ Config-driven listing filters.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,117 @@ WBS_TRUSTED_SOURCES = frozenset({
     "gewobag", "degewo", "howoge", "stadtundland", "deutschewohnen",
     "berlinovo", "vonovia", "gesobau", "wbm",
 })
+
+# Canonical Berlin districts (borough-level)
+BERLIN_DISTRICT_ALIASES: dict[str, tuple[str, ...]] = {
+    "Mitte": ("mitte", "moabit", "wedding", "gesundbrunnen", "tiergarten"),
+    "Friedrichshain-Kreuzberg": ("friedrichshain", "kreuzberg"),
+    "Pankow": ("pankow", "prenzlauer berg", "weissensee", "weißensee"),
+    "Charlottenburg-Wilmersdorf": ("charlottenburg", "wilmersdorf", "halensee", "grunewald"),
+    "Spandau": ("spandau",),
+    "Steglitz-Zehlendorf": ("steglitz", "zehlendorf", "lankwitz", "dahlem"),
+    "Tempelhof-Schoeneberg": ("tempelhof", "schoneberg", "schöneberg", "friedenau"),
+    "Neukoelln": ("neukolln", "neukölln", "britz", "rudow"),
+    "Treptow-Koepenick": ("treptow", "köpenick", "koepenick", "adlershof"),
+    "Marzahn-Hellersdorf": ("marzahn", "hellersdorf"),
+    "Lichtenberg": ("lichtenberg", "hohenschonhausen", "hohenschönhausen"),
+    "Reinickendorf": ("reinickendorf", "tegel", "hermsdorf"),
+}
+
+
+def _normalize_text(s: str) -> str:
+    t = (s or "").lower().strip()
+    return (
+        t.replace("ä", "ae")
+        .replace("ö", "oe")
+        .replace("ü", "ue")
+        .replace("ß", "ss")
+    )
+
+
+def normalize_district_name(value: str) -> str | None:
+    v = _normalize_text(value)
+    if not v:
+        return None
+    for canonical, aliases in BERLIN_DISTRICT_ALIASES.items():
+        if v == _normalize_text(canonical):
+            return canonical
+        if any(v == _normalize_text(a) for a in aliases):
+            return canonical
+    return None
+
+
+def normalize_districts(values: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        c = normalize_district_name(str(raw))
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        out.append(c)
+    return out
+
+
+def _matches_any_selected_district(listing: dict[str, Any], selected: list[str]) -> bool:
+    if not selected:
+        return True
+    hay = _normalize_text(
+        " ".join(
+            [
+                str(listing.get("location") or ""),
+                str(listing.get("district") or ""),
+                str(listing.get("city") or ""),
+                str(listing.get("title") or ""),
+                str(listing.get("description") or ""),
+            ]
+        )
+    )
+    if not hay:
+        return False
+    for canonical in selected:
+        aliases = BERLIN_DISTRICT_ALIASES.get(canonical, ())
+        tokens = (canonical,) + tuple(aliases)
+        for token in tokens:
+            if _normalize_text(token) in hay:
+                return True
+    return False
+
+
+def _extract_wbs_level(listing: dict[str, Any]) -> int | None:
+    hay = _haystack(listing)
+    m = re.search(r"wbs[\s\-_]*([0-9]{2,3})", hay, re.I)
+    if not m:
+        return None
+    try:
+        lvl = int(m.group(1))
+    except Exception:
+        return None
+    if 80 <= lvl <= 220:
+        return lvl
+    return None
+
+
+def _matches_jobcenter(hay: str) -> bool:
+    phrases = (
+        "jobcenter",
+        "kdu",
+        "kosten der unterkunft",
+        "uebernahme jobcenter",
+        "übernahme jobcenter",
+        "buergergeld",
+        "bürgergeld",
+    )
+    return any(p in hay for p in phrases)
+
+
+def _matches_wohnungsgilde(hay: str) -> bool:
+    phrases = (
+        "wohnungsgilde",
+        "wohnungs gilde",
+        "wgilde",
+    )
+    return any(p in hay for p in phrases)
 
 
 def _haystack(listing: dict[str, Any]) -> str:
@@ -41,6 +153,10 @@ def passes_filters(listing: dict[str, Any], cfg: dict[str, Any]) -> bool:
                 return False
         elif city_cfg.lower() not in combined_loc:
             return False
+
+    selected_districts = normalize_districts(cfg.get("districts") or [])
+    if selected_districts and not _matches_any_selected_district(listing, selected_districts):
+        return False
 
     max_price = cfg.get("max_price")
     if max_price is not None:
@@ -92,6 +208,23 @@ def passes_filters(listing: dict[str, Any], cfg: dict[str, Any]) -> bool:
             phrases.extend(str(x).lower() for x in extra if x)
             if not any(p in hay for p in phrases):
                 return False
+
+    selected_wbs_level = cfg.get("wbs_level")
+    if selected_wbs_level is not None:
+        try:
+            lvl = int(selected_wbs_level)
+        except Exception:
+            lvl = None
+        listing_lvl = _extract_wbs_level(listing)
+        # If user requested a WBS level, keep only listings with explicit level <= selected level.
+        if lvl is None or listing_lvl is None or listing_lvl > lvl:
+            return False
+
+    hay = _haystack(listing)
+    if cfg.get("jobcenter_required") and not _matches_jobcenter(hay):
+        return False
+    if cfg.get("wohnungsgilde_required") and not _matches_wohnungsgilde(hay):
+        return False
 
     for kw in cfg.get("keywords_include") or []:
         k = str(kw).strip().lower()

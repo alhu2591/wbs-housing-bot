@@ -25,6 +25,7 @@ from telegram.ext import (
 
 from scraper.registry import ALL_SOURCE_IDS
 from utils.config_store import save_runtime_config
+from utils.filters import BERLIN_DISTRICT_ALIASES, normalize_districts
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,8 @@ BOT_COMMANDS = [
 
 _runtime_on_interval_change: Callable[[int], None] | None = None
 _runtime_trigger_cycle: Callable[[], Awaitable[None]] | None = None
+
+WBS_LEVEL_OPTIONS = [100, 120, 140, 160, 180, 200]
 
 
 def set_runtime_callbacks(
@@ -125,10 +128,14 @@ def format_listing_caption(listing: dict[str, Any]) -> str:
 
 def _menu_main(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     city = cfg.get("city") or ""
+    selected_districts = normalize_districts(cfg.get("districts") or [])
     max_price = cfg.get("max_price")
     min_size = cfg.get("min_size")
     rooms = cfg.get("rooms")
     wbs_required = bool(cfg.get("wbs_required", False))
+    wbs_level = cfg.get("wbs_level")
+    jobcenter_required = bool(cfg.get("jobcenter_required", False))
+    wohnungsgilde_required = bool(cfg.get("wohnungsgilde_required", False))
     sources = cfg.get("sources") or []
     notify_enabled = bool(cfg.get("notify_enabled", True))
     send_images = bool(cfg.get("send_images", False))
@@ -137,10 +144,13 @@ def _menu_main(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     text = (
         "WBS Housing Bot (Berlin)\n\n"
         f"Stadt: {city or 'alle'}\n"
+        f"Bezirke: {len(selected_districts)} ausgewaehlt\n"
         f"Max. Preis: {_fmt_price(max_price)} €\n"
         f"Min. Fläche: {_fmt_maybe_int(min_size)} m²\n"
         f"Min. Zimmer: {_fmt_maybe_int(rooms)}\n"
         f"WBS erforderlich: {'Ja' if wbs_required else 'Nein'}\n"
+        f"WBS Stufe <= {wbs_level if wbs_level is not None else 'off'}\n"
+        f"Jobcenter: {'Ja' if jobcenter_required else 'Nein'} | Wohnungsgilde: {'Ja' if wohnungsgilde_required else 'Nein'}\n"
         f"Quellen aktiv: {len(sources)}\n"
         f"Benachrichtigungen: {'ON' if notify_enabled else 'OFF'}\n"
         f"Bilder: {'ON' if send_images else 'OFF'} (max {max_images})\n"
@@ -160,26 +170,34 @@ def _menu_main(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
 
 def _menu_filters(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     city = cfg.get("city") or ""
+    selected_districts = normalize_districts(cfg.get("districts") or [])
     max_price = cfg.get("max_price")
     min_size = cfg.get("min_size")
     rooms = cfg.get("rooms")
     wbs_required = bool(cfg.get("wbs_required", False))
+    wbs_level = cfg.get("wbs_level")
+    jobcenter_required = bool(cfg.get("jobcenter_required", False))
+    wohnungsgilde_required = bool(cfg.get("wohnungsgilde_required", False))
     kw_inc = cfg.get("keywords_include") or []
     kw_exc = cfg.get("keywords_exclude") or []
 
     text = (
         "Filter Einstellungen\n\n"
         f"Stadt: {city or 'alle'}\n"
+        f"Bezirke: {len(selected_districts)}\n"
         f"Max. Preis: {_fmt_price(max_price)} €\n"
         f"Min. Fläche: {_fmt_maybe_int(min_size)} m²\n"
         f"Min. Zimmer: {_fmt_maybe_int(rooms)}\n"
         f"WBS erforderlich: {'Ja' if wbs_required else 'Nein'}\n"
+        f"WBS Stufe <= {wbs_level if wbs_level is not None else 'off'}\n"
+        f"Jobcenter: {'Ja' if jobcenter_required else 'Nein'} | Wohnungsgilde: {'Ja' if wohnungsgilde_required else 'Nein'}\n"
         f"Keywords include: {len(kw_inc)} | exclude: {len(kw_exc)}\n"
     )
 
     kb = InlineKeyboardMarkup(
         [
             [InlineKeyboardButton(f"Stadt: {city or 'alle'}", callback_data="ui:prompt:city")],
+            [InlineKeyboardButton(f"Bezirke waehlen ({len(selected_districts)})", callback_data="ui:districts")],
             [
                 InlineKeyboardButton("-50 €", callback_data="ui:delta:max_price:-50"),
                 InlineKeyboardButton("+50 €", callback_data="ui:delta:max_price:50"),
@@ -208,10 +226,74 @@ def _menu_filters(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
                 InlineKeyboardButton(f"WBS: {'Ja' if wbs_required else 'Nein'}", callback_data="ui:toggle:wbs_required"),
                 InlineKeyboardButton("Keywords", callback_data="ui:keywords"),
             ],
+            [
+                InlineKeyboardButton(f"WBS-Level: {wbs_level if wbs_level is not None else 'off'}", callback_data="ui:wbs_level"),
+            ],
+            [
+                InlineKeyboardButton(
+                    f"Jobcenter: {'ON' if jobcenter_required else 'OFF'}",
+                    callback_data="ui:toggle:jobcenter_required",
+                ),
+                InlineKeyboardButton(
+                    f"Wohnungsgilde: {'ON' if wohnungsgilde_required else 'OFF'}",
+                    callback_data="ui:toggle:wohnungsgilde_required",
+                ),
+            ],
             [InlineKeyboardButton("Zurück", callback_data="ui:main")],
         ]
     )
     return text, kb
+
+
+def _menu_districts(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
+    selected = set(normalize_districts(cfg.get("districts") or []))
+    district_names = list(BERLIN_DISTRICT_ALIASES.keys())
+    text = (
+        "Berlin Bezirke (Mehrfachauswahl)\n\n"
+        f"Ausgewaehlt: {len(selected)}/{len(district_names)}\n"
+        "Hinweis: Nur Listings aus mindestens einem ausgewaehlten Bezirk werden gesendet."
+    )
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for name in district_names:
+        on = name in selected
+        label = ("[ON] " if on else "[OFF] ") + name
+        row.append(InlineKeyboardButton(label, callback_data=f"ui:toggle_district:{name}"))
+        if len(row) == 1:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [
+            InlineKeyboardButton("Alle Bezirke", callback_data="ui:districts:all"),
+            InlineKeyboardButton("Keine Bezirke", callback_data="ui:districts:none"),
+        ]
+    )
+    rows.append([InlineKeyboardButton("Zurueck", callback_data="ui:filters")])
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _menu_wbs_level(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
+    lvl = cfg.get("wbs_level")
+    text = "WBS Level Filter\n\n"
+    if lvl is not None:
+        text += f"Aktiv: <= {lvl}"
+    else:
+        text += "WBS Level: off"
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for opt in WBS_LEVEL_OPTIONS:
+        label = f"[{'ON' if lvl == opt else '  '}] {opt}"
+        row.append(InlineKeyboardButton(label, callback_data=f"ui:set_wbs_level:{opt}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("Level aus", callback_data="ui:set_wbs_level:none")])
+    rows.append([InlineKeyboardButton("Zurueck", callback_data="ui:filters")])
+    return text, InlineKeyboardMarkup(rows)
 
 
 def _menu_keywords(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
@@ -353,10 +435,14 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     text = (
         "Aktuelle Config (effektiv):\n"
         f"city={cfg.get('city')}\n"
+        f"districts={cfg.get('districts')}\n"
         f"max_price={cfg.get('max_price')}\n"
         f"min_size={cfg.get('min_size')}\n"
         f"rooms={cfg.get('rooms')}\n"
         f"wbs_required={cfg.get('wbs_required')}\n"
+        f"wbs_level={cfg.get('wbs_level')}\n"
+        f"jobcenter_required={cfg.get('jobcenter_required')}\n"
+        f"wohnungsgilde_required={cfg.get('wohnungsgilde_required')}\n"
         f"interval_minutes={cfg.get('interval_minutes')}\n"
         f"notify_enabled={cfg.get('notify_enabled')}\n"
         f"send_images={cfg.get('send_images')}\n"
@@ -432,7 +518,7 @@ def _set_cfg(mut: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
     new_cfg = dict(_CFG)
     mut(new_cfg)
     # Avoid accidental aliasing of lists.
-    for k in ("sources", "keywords_include", "keywords_exclude", "wbs_filter"):
+    for k in ("sources", "keywords_include", "keywords_exclude", "wbs_filter", "districts"):
         if k in new_cfg and isinstance(new_cfg[k], list):
             new_cfg[k] = list(new_cfg[k])
     # Normalize sources uniqueness.
@@ -446,6 +532,8 @@ def _set_cfg(mut: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
             seen.add(ss)
             uniq.append(ss)
         new_cfg["sources"] = uniq
+    if "districts" in new_cfg and isinstance(new_cfg["districts"], list):
+        new_cfg["districts"] = normalize_districts(new_cfg["districts"])
 
     _CFG = new_cfg
     _persist_cfg()
@@ -465,6 +553,10 @@ async def _show_menu_for_query(
         text, kb = _menu_filters(cfg)
     elif menu_id == "keywords":
         text, kb = _menu_keywords(cfg)
+    elif menu_id == "districts":
+        text, kb = _menu_districts(cfg)
+    elif menu_id == "wbs_level":
+        text, kb = _menu_wbs_level(cfg)
     elif menu_id == "sources":
         text, kb = _menu_sources(cfg)
     elif menu_id == "notify":
@@ -497,6 +589,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "ui:keywords":
         await _show_menu_for_query(update, context, "keywords")
         return
+    if data == "ui:districts":
+        await _show_menu_for_query(update, context, "districts")
+        return
+    if data == "ui:wbs_level":
+        await _show_menu_for_query(update, context, "wbs_level")
+        return
     if data == "ui:sources":
         await _show_menu_for_query(update, context, "sources")
         return
@@ -515,9 +613,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         _set_cfg(lambda c: c.__setitem__(key, new_val))
         if key == "interval_minutes" and _runtime_on_interval_change:
             _runtime_on_interval_change(int(new_val))
-        if key in {"notify_enabled"}:
+        if key in {"notify_enabled", "jobcenter_required", "wohnungsgilde_required", "wbs_required"}:
             await _maybe_trigger_cycle()
-        await _show_menu_for_query(update, context, "main")
+        await _show_menu_for_query(update, context, "filters" if key in {"jobcenter_required", "wohnungsgilde_required", "wbs_required"} else "main")
         return
 
     # Navigation to prompt: ui:prompt:key
@@ -589,6 +687,56 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         _set_cfg(lambda c: c.__setitem__("sources", []))
         await _maybe_trigger_cycle()
         await _show_menu_for_query(update, context, "sources")
+        return
+
+    if data.startswith("ui:toggle_district:"):
+        district = data.split(":", 2)[2]
+        def _mut_district(c: dict[str, Any]) -> None:
+            cur = set(normalize_districts(c.get("districts") or []))
+            normalized = normalize_districts([district])
+            if not normalized:
+                return
+            n = normalized[0]
+            if n in cur:
+                cur.remove(n)
+            else:
+                cur.add(n)
+            c["districts"] = sorted(cur)
+        _set_cfg(_mut_district)
+        await _maybe_trigger_cycle()
+        await _show_menu_for_query(update, context, "districts")
+        return
+
+    if data == "ui:districts:all":
+        _set_cfg(lambda c: c.__setitem__("districts", list(BERLIN_DISTRICT_ALIASES.keys())))
+        await _maybe_trigger_cycle()
+        await _show_menu_for_query(update, context, "districts")
+        return
+
+    if data == "ui:districts:none":
+        _set_cfg(lambda c: c.__setitem__("districts", []))
+        await _maybe_trigger_cycle()
+        await _show_menu_for_query(update, context, "districts")
+        return
+
+    if data.startswith("ui:set_wbs_level:"):
+        raw = data.split(":", 2)[2]
+        def _mut_wbs(c: dict[str, Any]) -> None:
+            if raw == "none":
+                c["wbs_level"] = None
+                return
+            try:
+                lvl = int(raw)
+            except Exception:
+                return
+            if lvl < 100:
+                lvl = 100
+            if lvl > 200:
+                lvl = 200
+            c["wbs_level"] = lvl
+        _set_cfg(_mut_wbs)
+        await _maybe_trigger_cycle()
+        await _show_menu_for_query(update, context, "wbs_level")
         return
 
     # Fallback

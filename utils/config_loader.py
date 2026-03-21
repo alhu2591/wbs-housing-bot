@@ -60,10 +60,14 @@ def load_config(path: str | None = None) -> dict[str, Any]:
 
     required_keys = [
         "city",
+        "districts",
         "max_price",
         "min_size",
         "rooms",
         "wbs_required",
+        "wbs_level",
+        "jobcenter_required",
+        "wohnungsgilde_required",
         "interval_minutes",
         "keywords_include",
         "keywords_exclude",
@@ -81,6 +85,7 @@ def load_config(path: str | None = None) -> dict[str, Any]:
 
     # City filter: empty string disables city filtering.
     out["city"] = str(out.get("city") or "").strip()
+    out["districts"] = _str_list(out.get("districts"))
 
     # Numeric filters: set to null to disable.
     max_price = out.get("max_price")
@@ -95,9 +100,18 @@ def load_config(path: str | None = None) -> dict[str, Any]:
     )
     rooms = out.get("rooms")
     out["rooms"] = float(rooms) if rooms is not None and str(rooms).strip() != "" else None
+    wbs_level = out.get("wbs_level")
+    out["wbs_level"] = int(float(wbs_level)) if wbs_level is not None and str(wbs_level).strip() != "" else None
+    if out["wbs_level"] is not None:
+        if out["wbs_level"] < 100:
+            out["wbs_level"] = 100
+        if out["wbs_level"] > 200:
+            out["wbs_level"] = 200
 
     # Booleans
     out["wbs_required"] = _parse_required_bool(out.get("wbs_required"), "wbs_required")
+    out["jobcenter_required"] = _parse_required_bool(out.get("jobcenter_required"), "jobcenter_required")
+    out["wohnungsgilde_required"] = _parse_required_bool(out.get("wohnungsgilde_required"), "wohnungsgilde_required")
     out["send_images"] = _parse_required_bool(out.get("send_images"), "send_images")
     out["notify_enabled"] = _parse_required_bool(out.get("notify_enabled"), "notify_enabled")
 
