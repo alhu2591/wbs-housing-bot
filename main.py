@@ -1,13 +1,13 @@
 """
-WBS Housing Bot — Termux-friendly minimal CLI + Telegram bot.
+WBS Housing Bot — professional Telegram + scraper (Termux-ready).
 
 Run:
-  BOT_TOKEN=... CHAT_ID=... python main.py
+  export BOT_TOKEN=... CHAT_ID=...
+  python main.py
 
 Optional:
   python main.py --test-scrape
 """
-
 from __future__ import annotations
 
 import argparse
@@ -21,11 +21,11 @@ from typing import Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.error import NetworkError, RetryAfter, TimedOut, TelegramError
 
-from bot.handlers import BOT_COMMANDS, build_app, format_listing, set_config as set_bot_config
-from scraper.scrape_cycle import scrape_new_listings
+from bot.telegram_bot import BOT_COMMANDS, build_app, send_listing, set_config as set_bot_config
+from scraper.pipeline import scrape_new_listings
 from utils.config_loader import load_config
 from utils.logger import setup_logging
-from utils.seen_store import make_seen_entry, persist_seen
+from utils.storage import default_seen_path, make_seen_entry, persist_seen
 
 
 setup_logging()
@@ -36,23 +36,21 @@ def _get_env(name: str) -> str:
     return os.getenv(name, "").strip()
 
 
-async def _send_one(app, chat_id: str, listing: dict[str, Any], max_attempts: int = 3) -> bool:
-    """Send a listing with retry (no crashes)."""
-    text, keyboard = format_listing(listing)
-
-    for attempt in range(max_attempts):
+async def _send_one(app, chat_id: str, listing: dict[str, Any], cfg: dict[str, Any]) -> bool:
+    send_imgs = bool(cfg.get("send_images", True))
+    for attempt in range(3):
         try:
-            await app.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=keyboard,
-                disable_web_page_preview=True,
+            return await send_listing(
+                app.bot,
+                chat_id,
+                listing,
+                send_images=send_imgs,
+                max_photos=5,
             )
-            return True
         except RetryAfter as e:
             await asyncio.sleep((getattr(e, "retry_after", 0) or 0) + 1)
         except (NetworkError, TimedOut) as e:
-            if attempt < max_attempts - 1:
+            if attempt < 2:
                 await asyncio.sleep(2 * (attempt + 1))
             else:
                 logger.error("Telegram network error (final): %s", e)
@@ -61,14 +59,18 @@ async def _send_one(app, chat_id: str, listing: dict[str, Any], max_attempts: in
             return False
         except Exception as e:
             logger.error("Telegram send failed: %s", e, exc_info=True)
-
     return False
 
 
-async def _job_cycle(app, chat_id: str | None, cfg: dict[str, Any], seen_json_path: str) -> None:
+async def _job_cycle(
+    app,
+    chat_id: str | None,
+    cfg: dict[str, Any],
+    seen_path: str,
+) -> None:
     started = time.monotonic()
     try:
-        listings = await scrape_new_listings(cfg, seen_json_path)
+        listings = await scrape_new_listings(cfg, seen_path)
     except Exception as e:
         logger.error("scrape_new_listings crashed: %s", e, exc_info=True)
         return
@@ -77,59 +79,70 @@ async def _job_cycle(app, chat_id: str | None, cfg: dict[str, Any], seen_json_pa
         logger.info("Cycle done: no new matches (%.1fs).", time.monotonic() - started)
         return
 
-    max_per_cycle = int(cfg.get("max_per_cycle") or 10)
-    to_send = listings[:max_per_cycle]
+    max_per = int(cfg.get("max_per_cycle") or 5)
+    to_send = listings[:max_per]
 
     if not app or not chat_id:
-        logger.info("Cycle matched %d listings (no Telegram token configured).", len(to_send))
+        logger.info("Cycle: %d listings (no Telegram).", len(to_send))
         for l in to_send:
-            logger.info("MATCH: %s | %s | %s | %s", l.get("title"), l.get("price"), l.get("location"), l.get("url"))
+            logger.info(
+                "MATCH: %s | %s € | %s | %s img",
+                l.get("title"),
+                l.get("price"),
+                l.get("location"),
+                len(l.get("images") or []),
+            )
         return
 
-    logger.info("Cycle matched %d new listings; sending…", len(to_send))
-    sent_ids: list[dict[str, Any]] = []
-
+    logger.info("Sending %d listings…", len(to_send))
+    sent: list[dict[str, Any]] = []
     for listing in to_send:
         try:
-            ok = await _send_one(app, chat_id, listing)
+            ok = await _send_one(app, chat_id, listing, cfg)
             if ok:
-                sent_ids.append(listing)
-            await asyncio.sleep(0.2)
+                sent.append(listing)
+            await asyncio.sleep(0.35)
         except Exception as e:
-            logger.error("Send loop error: %s", e, exc_info=True)
+            logger.error("send loop: %s", e, exc_info=True)
 
-    if sent_ids:
+    if sent:
         try:
-            new_entries = {}
-            for l in sent_ids:
-                entry = make_seen_entry(l)
-                if entry:
-                    new_entries.update(entry)
-            if new_entries:
-                persist_seen(seen_json_path, new_entries)
+            batch = {}
+            for l in sent:
+                batch.update(make_seen_entry(l))
+            persist_seen(seen_path, batch)
         except Exception as e:
-            logger.error("Failed to persist seen.json: %s", e, exc_info=True)
+            logger.error("persist seen: %s", e, exc_info=True)
 
     logger.info(
-        "Cycle done: sent=%d matched=%d (%.1fs).",
-        len(sent_ids),
+        "Cycle done: sent=%d/%d (%.1fs).",
+        len(sent),
         len(to_send),
         time.monotonic() - started,
     )
 
 
-async def _run_once_for_test(cfg: dict[str, Any], seen_json_path: str) -> None:
-    listings = await scrape_new_listings(cfg, seen_json_path)
+async def _test_scrape(cfg: dict[str, Any], seen_path: str) -> None:
+    listings = await scrape_new_listings(cfg, seen_path)
     if not listings:
-        logger.info("No new listings.")
+        logger.info("No listings after filters.")
         return
-    for l in listings:
-        logger.info("TEST: %s | %s | %s | %s", l.get("title"), l.get("price"), l.get("location"), l.get("url"))
+    for l in listings[:15]:
+        logger.info(
+            "%s | %s € | %s m² | rooms=%s | wbs=%s | imgs=%d | %s",
+            l.get("title"),
+            l.get("price"),
+            l.get("size_m2"),
+            l.get("rooms"),
+            l.get("wbs_label"),
+            len(l.get("images") or []),
+            l.get("url"),
+        )
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="WBS Housing Bot (Termux-friendly)")
-    parser.add_argument("--test-scrape", action="store_true", help="Scrape once and log results (no Telegram).")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--test-scrape", action="store_true")
     args = parser.parse_args()
 
     cfg = load_config()
@@ -137,67 +150,74 @@ async def main() -> None:
 
     bot_token = _get_env("BOT_TOKEN")
     chat_id = _get_env("CHAT_ID")
+    seen_path = default_seen_path()
 
-    root_dir = os.path.dirname(os.path.abspath(__file__))
-    seen_json_path = os.path.join(root_dir, "seen.json")
+    root_seen = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen.json")
+    if os.path.exists(root_seen) and os.path.getsize(root_seen) > 5:
+        try:
+            import shutil
+            if not os.path.exists(seen_path) or os.path.getsize(seen_path) < 5:
+                shutil.copy2(root_seen, seen_path)
+                logger.info("Migrated seen.json → data/seen.json")
+        except Exception as e:
+            logger.warning("seen migration: %s", e)
 
     if args.test_scrape:
-        await _run_once_for_test(cfg, seen_json_path)
+        await _test_scrape(cfg, seen_path)
         return
 
     app = None
     if bot_token and chat_id:
         try:
             app = build_app(bot_token)
-            app.add_error_handler(lambda update, context: logger.error("PTB error: %s", context.error, exc_info=True))
+            app.add_error_handler(
+                lambda u, c: logger.error("PTB error: %s", c.error, exc_info=True)
+            )
             await app.initialize()
             await app.start()
             try:
                 await app.bot.set_my_commands(BOT_COMMANDS)
             except Exception as e:
-                logger.warning("set_my_commands failed: %s", e)
+                logger.warning("set_my_commands: %s", e)
         except Exception as e:
-            logger.error("Failed to start Telegram app: %s", e, exc_info=True)
+            logger.error("Telegram start failed: %s", e, exc_info=True)
             app = None
     else:
-        logger.warning("BOT_TOKEN/CHAT_ID missing; running scrape-only mode.")
+        logger.warning("BOT_TOKEN/CHAT_ID missing — scrape-only mode.")
 
-    interval_minutes = int(cfg["interval_minutes"])
-    scheduler = AsyncIOScheduler(timezone="UTC")
-    scheduler.add_job(
+    sched = AsyncIOScheduler(timezone="UTC")
+    sched.add_job(
         _job_cycle,
         "interval",
-        minutes=interval_minutes,
+        minutes=int(cfg["interval_minutes"]),
+        args=[app, chat_id if (bot_token and chat_id) else None, cfg, seen_path],
+        id="cycle",
         max_instances=1,
         coalesce=True,
-        args=[app, chat_id if bot_token and chat_id else None, cfg, seen_json_path],
-        id="scrape_cycle",
         misfire_grace_time=120,
     )
-    scheduler.start()
+    sched.start()
+    await _job_cycle(app, chat_id if (bot_token and chat_id) else None, cfg, seen_path)
 
-    # Immediate first run.
-    await _job_cycle(app, chat_id if bot_token and chat_id else None, cfg, seen_json_path)
+    stop = asyncio.Event()
 
-    stop_event = asyncio.Event()
-
-    def _handle_signal(*_):
-        logger.info("Shutdown signal received.")
-        stop_event.set()
+    def _sig(*_):
+        logger.info("Shutdown signal.")
+        stop.set()
 
     loop = asyncio.get_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, _handle_signal)
+            loop.add_signal_handler(sig, _sig)
         except Exception:
             pass
 
     poll_task = None
     if app and chat_id:
 
-        async def _polling_supervisor() -> None:
+        async def _poll():
             try:
-                logger.info("Telegram polling started.")
+                logger.info("Polling…")
                 await app.updater.start_polling(
                     drop_pending_updates=True,
                     allowed_updates=["message", "callback_query"],
@@ -207,15 +227,12 @@ async def main() -> None:
                     pool_timeout=15,
                 )
             except Exception as e:
-                logger.error("Polling crashed: %s", e, exc_info=True)
+                logger.error("Polling: %s", e, exc_info=True)
 
-        poll_task = asyncio.create_task(_polling_supervisor())
+        poll_task = asyncio.create_task(_poll())
 
-    await stop_event.wait()
-
-    logger.info("Stopping scheduler…")
-    scheduler.shutdown(wait=False)
-
+    await stop.wait()
+    sched.shutdown(wait=False)
     if app:
         try:
             await app.updater.stop()
@@ -226,13 +243,11 @@ async def main() -> None:
             await app.shutdown()
         except Exception:
             pass
-
     if poll_task:
         try:
             await poll_task
         except Exception:
             pass
-
     logger.info("Stopped.")
 
 
@@ -241,17 +256,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
-
-"""
-WBS Housing Bot — Termux-friendly minimal CLI + Telegram bot.
-
-Run:
-  BOT_TOKEN=... CHAT_ID=... python main.py
-
-Optional:
-  python main.py --test-scrape
-"""
-
-# NOTE: legacy/duplicated content was appended to the original file during refactor.
-# It is intentionally disabled at runtime by `raise SystemExit` above, but we must also
-

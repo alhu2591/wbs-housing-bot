@@ -1,18 +1,20 @@
 {
   "city": "Berlin",
-  "max_price": 600,
+  "max_price": 700,
+  "min_size": 30,
+  "rooms": 1,
+  "wbs_required": true,
+  "interval_minutes": 10,
+  "keywords_include": [],
+  "keywords_exclude": [],
+  "send_images": true,
   "wbs_filter": [
     "wbs 100",
     "wbs 140",
-    "wbs 160",
-    "wbs 180",
-    "wbs 200",
     "wbs erforderlich",
-    "wbs-berechtigung",
     "wohnberechtigungsschein",
-    "sozialer wohnungsbau",
     "geförderte wohnung"
   ],
-  "interval_minutes": 12
+  "max_per_cycle": 5,
+  "detail_concurrency": 4
 }
-

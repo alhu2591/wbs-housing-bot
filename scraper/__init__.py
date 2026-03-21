@@ -1,11 +1,6 @@
-"""
-Public `scraper/` package wrapper.
+"""Scraper package — site modules + pipeline."""
 
-The codebase currently keeps implementations under `scrapers/`.
-This wrapper exists to match the requested architecture (`scraper/`).
-"""
+from scraper.pipeline import scrape_new_listings
+from scraper.registry import ALL_SCRAPERS
 
-from scrapers import ALL_SCRAPERS
-
-__all__ = ["ALL_SCRAPERS"]
-
+__all__ = ["scrape_new_listings", "ALL_SCRAPERS"]

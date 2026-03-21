@@ -1,7 +1,7 @@
 """Immowelt — JS-rendered HTML scraper."""
 import logging
-from .base_scraper import fetch
-from ._common import build_listing, parse_price, parse_rooms
+from scraper.base_scraper import fetch
+from utils.parser import build_listing, parse_price, parse_rooms
 from utils.soup import make_soup
 
 logger = logging.getLogger(__name__)

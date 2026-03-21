@@ -1,7 +1,7 @@
 """Gesobau Berlin — government housing company."""
 import logging
-from .base_scraper import fetch, fetch_json, build_client
-from ._common import build_listing, parse_price, parse_rooms
+from scraper.base_scraper import fetch, fetch_json, build_client
+from utils.parser import build_listing, parse_price, parse_rooms
 from utils.soup import make_soup
 
 logger = logging.getLogger(__name__)
