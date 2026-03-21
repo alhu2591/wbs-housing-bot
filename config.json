@@ -40,5 +40,15 @@
   ],
   "max_images": 5,
   "max_per_cycle": 5,
-  "detail_concurrency": 4
+  "detail_concurrency": 4,
+  "scrape_concurrency": 5,
+  "respect_robots": true,
+  "use_playwright": false,
+  "scrape_delay_min": 1.0,
+  "scrape_delay_max": 3.0,
+  "source_timeout_seconds": 90,
+  "playwright_timeout_ms": 30000,
+  "exclude_senior_housing": true,
+  "admin_chat_id": "",
+  "notify_admin_on_error": false
 }

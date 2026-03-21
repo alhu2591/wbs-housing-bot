@@ -91,6 +91,17 @@ def _matches_any_selected_district(listing: dict[str, Any], selected: list[str])
     return False
 
 
+_SENIOR_CARE_EXCLUDE = re.compile(
+    r"(senioren|seniorenwohn|senioren-?wohnung|altenheim|alten-?wohn|pflege|betreutes wohnen|"
+    r"betreute wohnung|demenz|tagespflege|kurzzeitpflege|residenz|pflegeheim)",
+    re.I,
+)
+
+
+def _is_senior_care_listing(listing: dict[str, Any]) -> bool:
+    return bool(_SENIOR_CARE_EXCLUDE.search(_haystack(listing)))
+
+
 def _extract_wbs_level(listing: dict[str, Any]) -> int | None:
     existing = listing.get("wbs_level")
     if existing is not None:
@@ -101,15 +112,23 @@ def _extract_wbs_level(listing: dict[str, Any]) -> int | None:
         except Exception:
             pass
     hay = _haystack(listing)
-    m = re.search(r"wbs[\s\-_]*([0-9]{2,3})", hay, re.I)
-    if not m:
-        return None
-    try:
-        lvl = int(m.group(1))
-    except Exception:
-        return None
-    if 80 <= lvl <= 220:
-        return lvl
+    patterns = (
+        r"wbs[\s\-_]*([0-9]{2,3})\b",
+        r"\bwbsschein\s*[-]?\s*([0-9]{2,3})\b",
+        r"wohnberechtigungsschein\s*[-:/]?\s*([0-9]{2,3})",
+        r"\b([0-9]{2,3})\s*(?:€|eur)?\s*wbs\b",
+        r"wbs\s*[:#]?\s*([0-9]{2,3})",
+    )
+    for pat in patterns:
+        m = re.search(pat, hay, re.I)
+        if not m:
+            continue
+        try:
+            lvl = int(m.group(1))
+        except Exception:
+            continue
+        if 80 <= lvl <= 220:
+            return lvl
     return None
 
 
@@ -147,8 +166,25 @@ def _haystack(listing: dict[str, Any]) -> str:
     return " ".join(parts).lower()
 
 
+def _listing_price_int(listing: dict[str, Any]) -> int | None:
+    p = listing.get("price")
+    if p is None:
+        return None
+    try:
+        return int(round(float(p)))
+    except Exception:
+        return None
+
+
 def passes_filters(listing: dict[str, Any], cfg: dict[str, Any]) -> bool:
     """Return True if listing satisfies config constraints."""
+    if cfg.get("exclude_senior_housing", True) and _is_senior_care_listing(listing):
+        logger.info(
+            "filter drop (senior/care): %s",
+            (listing.get("title") or "")[:80],
+        )
+        return False
+
     city_cfg = str(cfg.get("city") or "").strip()
     loc = str(listing.get("location") or "")
     dist = str(listing.get("district") or "")
@@ -168,12 +204,11 @@ def passes_filters(listing: dict[str, Any], cfg: dict[str, Any]) -> bool:
 
     max_price = cfg.get("max_price")
     if max_price is not None:
-        price = listing.get("price")
-        if price is None:
+        p = _listing_price_int(listing)
+        if p is None:
             return False
         try:
-            p = int(price)
-            if p > int(float(max_price)):
+            if p > int(round(float(max_price))):
                 return False
         except Exception:
             return False

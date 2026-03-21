@@ -31,15 +31,23 @@ DEFAULT_WBS_PHRASES = [
 def extract_wbs_level(text: str) -> int | None:
     if not text:
         return None
-    m = re.search(r"wbs[\s\-_]*([0-9]{2,3})", text, re.I)
-    if not m:
-        return None
-    try:
-        level = int(m.group(1))
-    except Exception:
-        return None
-    if 80 <= level <= 220:
-        return level
+    patterns = (
+        r"wbs[\s\-_]*([0-9]{2,3})\b",
+        r"\bwbsschein\s*[-]?\s*([0-9]{2,3})\b",
+        r"wohnberechtigungsschein\s*[-:/]?\s*([0-9]{2,3})",
+        r"\b([0-9]{2,3})\s*(?:€|eur)?\s*wbs\b",
+        r"wbs\s*[:#]?\s*([0-9]{2,3})",
+    )
+    for pat in patterns:
+        m = re.search(pat, text, re.I)
+        if not m:
+            continue
+        try:
+            level = int(m.group(1))
+        except Exception:
+            continue
+        if 80 <= level <= 220:
+            return level
     return None
 
 

@@ -25,6 +25,7 @@ from telegram.ext import (
 
 from scraper.registry import ALL_SOURCE_IDS
 from utils.config_store import save_runtime_config
+from utils.fetch_runtime import set_fetch_runtime
 from utils.filters import BERLIN_DISTRICT_ALIASES, normalize_districts
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ def get_config() -> dict[str, Any]:
 def _persist_cfg() -> None:
     try:
         save_runtime_config(_CFG)
+        set_fetch_runtime(_CFG)
     except Exception as e:
         logger.warning("persist runtime config failed: %s", e)
 
@@ -183,6 +185,7 @@ def _menu_main(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
             [InlineKeyboardButton("مصادر السكن", callback_data="ui:sources")],
             [InlineKeyboardButton("الإشعارات", callback_data="ui:notify")],
             [InlineKeyboardButton("الصور والوسائط", callback_data="ui:media")],
+            [InlineKeyboardButton("الامتثال والتقنية", callback_data="ui:ethics")],
         ]
     )
     return text, kb
@@ -277,7 +280,7 @@ def _menu_districts(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     row: list[InlineKeyboardButton] = []
     for name in district_names:
         on = name in selected
-        label = ("[ON] " if on else "[OFF] ") + name
+        label = ("مفعّل · " if on else "معطّل · ") + name
         row.append(InlineKeyboardButton(label, callback_data=f"ui:toggle_district:{name}"))
         if len(row) == 1:
             rows.append(row)
@@ -304,7 +307,7 @@ def _menu_wbs_level(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
     for opt in WBS_LEVEL_OPTIONS:
-        label = f"[{'ON' if lvl == opt else '  '}] {opt}"
+        label = f"{'✓' if lvl == opt else '·'} {opt}"
         row.append(InlineKeyboardButton(label, callback_data=f"ui:set_wbs_level:{opt}"))
         if len(row) == 3:
             rows.append(row)
@@ -361,7 +364,7 @@ def _menu_sources(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     buttons = []
     for sid in ALL_SOURCE_IDS:
         on = sid in enabled
-        label = ("[ON] " if on else "[OFF] ") + SOURCE_LABELS_AR.get(sid, sid)
+        label = ("مفعّل · " if on else "معطّل · ") + SOURCE_LABELS_AR.get(sid, sid)
         buttons.append(InlineKeyboardButton(label, callback_data=f"ui:toggle_src:{sid}"))
 
     rows: list[list[InlineKeyboardButton]] = []
@@ -438,6 +441,49 @@ def _menu_media(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     return text, kb
 
 
+def _menu_ethics(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
+    rr = cfg.get("respect_robots")
+    if rr is None:
+        rr = True
+    pw = bool(cfg.get("use_playwright"))
+    ex = cfg.get("exclude_senior_housing")
+    if ex is None:
+        ex = True
+
+    text = (
+        "الامتثال والتقنية\n\n"
+        f"احترام robots.txt: {'نعم' if rr else 'لا'}\n"
+        f"Playwright (صفحات تعتمد JS): {'مفعل' if pw else 'معطل'}\n"
+        f"استبعاد سكن المسنين/الرعاية: {'نعم' if ex else 'لا'}\n\n"
+        "Playwright اختياري وثقيل على Termux — ثبّت الحزمة فقط إذا احتجته.\n"
+    )
+
+    kb = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    f"robots.txt: {'نعم' if rr else 'لا'}",
+                    callback_data="ui:toggle:respect_robots",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"Playwright: {'مفعل' if pw else 'معطل'}",
+                    callback_data="ui:toggle:use_playwright",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    f"استبعاد مسنين/رعاية: {'نعم' if ex else 'لا'}",
+                    callback_data="ui:toggle:exclude_senior_housing",
+                )
+            ],
+            [InlineKeyboardButton("رجوع", callback_data="ui:main")],
+        ]
+    )
+    return text, kb
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = get_config()
     text, kb = _menu_main(cfg)
@@ -453,21 +499,24 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = get_config()
     text = (
-        "الإعدادات الحالية:\n"
-        f"city={cfg.get('city')}\n"
-        f"districts={cfg.get('districts')}\n"
-        f"max_price={cfg.get('max_price')}\n"
-        f"min_size={cfg.get('min_size')}\n"
-        f"rooms={cfg.get('rooms')}\n"
-        f"wbs_required={cfg.get('wbs_required')}\n"
-        f"wbs_level={cfg.get('wbs_level')}\n"
-        f"jobcenter_required={cfg.get('jobcenter_required')}\n"
-        f"wohnungsgilde_required={cfg.get('wohnungsgilde_required')}\n"
-        f"interval_minutes={cfg.get('interval_minutes')}\n"
-        f"notify_enabled={cfg.get('notify_enabled')}\n"
-        f"send_images={cfg.get('send_images')}\n"
-        f"max_images={cfg.get('max_images')}\n"
-        f"sources={cfg.get('sources')}\n"
+        "📋 الإعدادات الحالية\n\n"
+        f"المدينة: {cfg.get('city')}\n"
+        f"المناطق: {cfg.get('districts')}\n"
+        f"أقصى سعر (€): {cfg.get('max_price')}\n"
+        f"أقل مساحة (م²): {cfg.get('min_size')}\n"
+        f"أقل غرف: {cfg.get('rooms')}\n"
+        f"WBS مطلوب: {cfg.get('wbs_required')}\n"
+        f"مستوى WBS: {cfg.get('wbs_level')}\n"
+        f"Jobcenter: {cfg.get('jobcenter_required')}\n"
+        f"Wohnungsgilde: {cfg.get('wohnungsgilde_required')}\n"
+        f"الفاصل (دقيقة): {cfg.get('interval_minutes')}\n"
+        f"الإشعارات: {cfg.get('notify_enabled')}\n"
+        f"إرسال الصور: {cfg.get('send_images')}\n"
+        f"حد الصور: {cfg.get('max_images')}\n"
+        f"احترام robots: {cfg.get('respect_robots')}\n"
+        f"Playwright: {cfg.get('use_playwright')}\n"
+        f"تزامن السحب: {cfg.get('scrape_concurrency')}\n"
+        f"المصادر: {cfg.get('sources')}\n"
     )
     await update.message.reply_text(text)
 
@@ -583,6 +632,8 @@ async def _show_menu_for_query(
         text, kb = _menu_notify(cfg)
     elif menu_id == "media":
         text, kb = _menu_media(cfg)
+    elif menu_id == "ethics":
+        text, kb = _menu_ethics(cfg)
     else:
         text, kb = _menu_main(cfg)
 
@@ -624,18 +675,35 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "ui:media":
         await _show_menu_for_query(update, context, "media")
         return
+    if data == "ui:ethics":
+        await _show_menu_for_query(update, context, "ethics")
+        return
 
     parts = data.split(":")
     # Toggle booleans: ui:toggle:key
     if parts[0] == "ui" and parts[1] == "toggle" and len(parts) == 3:
         key = parts[2]
-        new_val = not bool(get_config().get(key))
+        cfg_now = get_config()
+        cur = cfg_now.get(key)
+        if key == "respect_robots":
+            cur = True if cur is None else bool(cur)
+        elif key == "exclude_senior_housing":
+            cur = True if cur is None else bool(cur)
+        else:
+            cur = bool(cur)
+        new_val = not cur
         _set_cfg(lambda c: c.__setitem__(key, new_val))
-        if key == "interval_minutes" and _runtime_on_interval_change:
-            _runtime_on_interval_change(int(new_val))
         if key in {"notify_enabled", "jobcenter_required", "wohnungsgilde_required", "wbs_required"}:
             await _maybe_trigger_cycle()
-        await _show_menu_for_query(update, context, "filters" if key in {"jobcenter_required", "wohnungsgilde_required", "wbs_required"} else "main")
+        if key in {"jobcenter_required", "wohnungsgilde_required", "wbs_required"}:
+            sub = "filters"
+        elif key in {"respect_robots", "use_playwright", "exclude_senior_housing"}:
+            sub = "ethics"
+        elif key in {"notify_enabled", "send_images"}:
+            sub = "main"
+        else:
+            sub = "main"
+        await _show_menu_for_query(update, context, sub)
         return
 
     # Navigation to prompt: ui:prompt:key
@@ -872,7 +940,7 @@ async def send_listing(
     """Send one listing; use media group when images available."""
     caption = format_listing_caption(listing)
     url = str(listing.get("url") or "")
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("Öffnen", url=url)]]) if url else None
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("فتح الرابط", url=url)]]) if url else None
     imgs = [u for u in (listing.get("images") or []) if isinstance(u, str) and u.startswith("http")]
     imgs = imgs[:max(1, min(max_photos, 10))]
 

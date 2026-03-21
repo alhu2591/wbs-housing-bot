@@ -54,16 +54,19 @@ SCRAPERS_BY_SOURCE: dict[str, ScraperFn] = {
 ALL_SOURCE_IDS: list[str] = list(SCRAPERS_BY_SOURCE.keys())
 
 
-def select_scrapers(cfg: dict[str, Any]) -> list[ScraperFn]:
+def select_scraper_pairs(cfg: dict[str, Any]) -> list[tuple[str, ScraperFn]]:
     enabled = cfg.get("sources") or []
-    enabled_ids = {str(s).strip() for s in enabled if str(s).strip()}
+    enabled_ids = [str(s).strip() for s in enabled if str(s).strip()]
     if not enabled_ids:
-        # Explicitly empty means "scrape no sources".
         return []
-    out: list[ScraperFn] = []
+    out: list[tuple[str, ScraperFn]] = []
     for sid in enabled_ids:
         fn = SCRAPERS_BY_SOURCE.get(sid)
         if fn:
-            out.append(fn)
+            out.append((sid, fn))
     return out
+
+
+def select_scrapers(cfg: dict[str, Any]) -> list[ScraperFn]:
+    return [fn for _, fn in select_scraper_pairs(cfg)]
 

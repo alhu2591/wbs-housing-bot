@@ -31,9 +31,10 @@ from bot.telegram_bot import (
 )
 from scraper.pipeline import scrape_new_listings
 from utils.config_loader import load_config
+from utils.fetch_runtime import set_fetch_runtime
 from utils.logger import setup_logging
 from utils.config_store import load_runtime_config
-from utils.storage import default_seen_path, make_seen_entry, persist_seen
+from utils.storage import default_seen_path, get_seen_store, persist_seen_listings
 
 
 setup_logging()
@@ -70,6 +71,21 @@ async def _send_one(app, chat_id: str, listing: dict[str, Any], cfg: dict[str, A
     return False
 
 
+async def _notify_admin_error(app, cfg: dict[str, Any], err: Exception) -> None:
+    if not app or not cfg.get("notify_admin_on_error"):
+        return
+    aid = str(cfg.get("admin_chat_id") or "").strip()
+    if not aid:
+        return
+    try:
+        await app.bot.send_message(
+            chat_id=aid,
+            text=f"⚠️ خطأ في دورة السحب:\n{err!s}"[:4000],
+        )
+    except Exception as e:
+        logger.warning("admin notify failed: %s", e)
+
+
 async def _job_cycle(
     app,
     chat_id: str | None,
@@ -82,6 +98,7 @@ async def _job_cycle(
         listings = await scrape_new_listings(cfg, seen_path)
     except Exception as e:
         logger.error("scrape_new_listings crashed: %s", e, exc_info=True)
+        await _notify_admin_error(app, cfg, e)
         return
 
     if not listings:
@@ -107,10 +124,7 @@ async def _job_cycle(
     if not notify_enabled:
         logger.info("Notify disabled: marking %d listings as seen.", len(to_send))
         try:
-            batch = {}
-            for l in to_send:
-                batch.update(make_seen_entry(l))
-            persist_seen(seen_path, batch)
+            persist_seen_listings(to_send)
         except Exception as e:
             logger.error("persist seen (notify disabled): %s", e, exc_info=True)
         return
@@ -128,10 +142,7 @@ async def _job_cycle(
 
     if sent:
         try:
-            batch = {}
-            for l in sent:
-                batch.update(make_seen_entry(l))
-            persist_seen(seen_path, batch)
+            persist_seen_listings(sent)
         except Exception as e:
             logger.error("persist seen: %s", e, exc_info=True)
 
@@ -168,6 +179,7 @@ async def main() -> None:
 
     base_cfg = load_config()
     cfg = load_runtime_config(base_cfg)
+    set_fetch_runtime(cfg)
     set_bot_config(cfg)
 
     bot_token = _get_env("BOT_TOKEN")
@@ -175,14 +187,19 @@ async def main() -> None:
     seen_path = default_seen_path()
 
     root_seen = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen.json")
+    data_seen_json = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "seen.json")
     if os.path.exists(root_seen) and os.path.getsize(root_seen) > 5:
         try:
             import shutil
-            if not os.path.exists(seen_path) or os.path.getsize(seen_path) < 5:
-                shutil.copy2(root_seen, seen_path)
-                logger.info("Migrated seen.json → data/seen.json")
+
+            os.makedirs(os.path.dirname(data_seen_json), exist_ok=True)
+            if not os.path.exists(data_seen_json) or os.path.getsize(data_seen_json) < 5:
+                shutil.copy2(root_seen, data_seen_json)
+                logger.info("Migrated project seen.json → data/seen.json (imported into SQLite on startup)")
         except Exception as e:
             logger.warning("seen migration: %s", e)
+
+    get_seen_store()
 
     if args.test_scrape:
         await _test_scrape(cfg, seen_path)
@@ -219,15 +236,19 @@ async def main() -> None:
                 cfg_get,
             )
 
-    sched = AsyncIOScheduler(timezone="UTC")
+    sched = AsyncIOScheduler(
+        timezone="UTC",
+        job_defaults={
+            "coalesce": True,
+            "max_instances": 1,
+            "misfire_grace_time": 60,
+        },
+    )
     sched.add_job(
         _run_cycle,
         "interval",
         minutes=int(cfg_get().get("interval_minutes") or 10),
         id="cycle",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=120,
     )
 
     def _set_interval_minutes(new_minutes: int) -> None:

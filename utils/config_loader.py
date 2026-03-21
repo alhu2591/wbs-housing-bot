@@ -133,4 +133,45 @@ def load_config(path: str | None = None) -> dict[str, Any]:
     out["max_per_cycle"] = _parse_required_int(out.get("max_per_cycle"), 1, 50, "max_per_cycle")
     out["detail_concurrency"] = _parse_required_int(out.get("detail_concurrency"), 1, 10, "detail_concurrency")
 
+    optional_defaults: dict[str, Any] = {
+        "respect_robots": True,
+        "use_playwright": False,
+        "scrape_delay_min": 1.0,
+        "scrape_delay_max": 3.0,
+        "source_timeout_seconds": 90.0,
+        "scrape_concurrency": 5,
+        "playwright_timeout_ms": 30000,
+        "exclude_senior_housing": True,
+        "admin_chat_id": "",
+        "notify_admin_on_error": False,
+    }
+    for k, v in optional_defaults.items():
+        if k not in out or out.get(k) is None:
+            out[k] = v
+
+    # Coerce types for optional numeric fields
+    try:
+        out["scrape_delay_min"] = float(out.get("scrape_delay_min", 1.0))
+        out["scrape_delay_max"] = float(out.get("scrape_delay_max", 3.0))
+        out["source_timeout_seconds"] = float(out.get("source_timeout_seconds", 90.0))
+        out["scrape_concurrency"] = min(5, max(1, int(float(out.get("scrape_concurrency", 5)))))
+        out["playwright_timeout_ms"] = int(float(out.get("playwright_timeout_ms", 30000)))
+    except Exception:
+        out["scrape_delay_min"] = 1.0
+        out["scrape_delay_max"] = 3.0
+        out["source_timeout_seconds"] = 90.0
+        out["scrape_concurrency"] = 5
+        out["playwright_timeout_ms"] = 30000
+
+    if isinstance(out.get("respect_robots"), str):
+        out["respect_robots"] = out["respect_robots"].lower() in ("1", "true", "yes")
+    if isinstance(out.get("use_playwright"), str):
+        out["use_playwright"] = out["use_playwright"].lower() in ("1", "true", "yes")
+    if isinstance(out.get("exclude_senior_housing"), str):
+        out["exclude_senior_housing"] = out["exclude_senior_housing"].lower() in ("1", "true", "yes")
+    if isinstance(out.get("notify_admin_on_error"), str):
+        out["notify_admin_on_error"] = out["notify_admin_on_error"].lower() in ("1", "true", "yes")
+
+    out["admin_chat_id"] = str(out.get("admin_chat_id") or "").strip()
+
     return out

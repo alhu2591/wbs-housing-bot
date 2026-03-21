@@ -10,6 +10,7 @@ def setup_logging() -> None:
     os.makedirs(LOG_DIR, exist_ok=True)
     log_file = os.path.join(LOG_DIR, "bot.log")
 
+    # Structured: time | level | logger | message (messages may include event=key fields)
     fmt     = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
