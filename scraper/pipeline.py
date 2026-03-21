@@ -11,7 +11,7 @@ import httpx
 
 from scraper.base_scraper import build_client
 from scraper.detail_page import enrich_listings_batch
-from scraper.registry import ALL_SCRAPERS
+from scraper.registry import select_scrapers
 from utils.filters import passes_filters
 from utils.storage import load_seen_ids
 
@@ -28,13 +28,16 @@ def _quick_prefilter(listing: dict[str, Any], cfg: dict[str, Any]) -> bool:
                 return False
         elif city_cfg.lower() not in loc:
             return False
-    p = listing.get("price")
-    if p is not None:
+    max_price = cfg.get("max_price")
+    if max_price is not None:
+        p = listing.get("price")
+        if p is None:
+            return False
         try:
-            if int(p) > int(cfg.get("max_price", 999999)):
+            if int(p) > int(float(max_price)):
                 return False
         except Exception:
-            pass
+            return False
     return True
 
 
@@ -50,7 +53,8 @@ async def _safe_scrape(fn: Callable[[], Awaitable[list]]) -> list[dict[str, Any]
 async def scrape_new_listings(cfg: dict[str, Any], seen_path: str) -> list[dict[str, Any]]:
     seen = load_seen_ids(seen_path)
 
-    tasks = [asyncio.create_task(_safe_scrape(fn)) for fn in ALL_SCRAPERS]
+    scrapers = select_scrapers(cfg)
+    tasks = [asyncio.create_task(_safe_scrape(fn)) for fn in scrapers]
     batches = await asyncio.gather(*tasks)
     raw: list[dict[str, Any]] = []
     for b in batches:

@@ -21,10 +21,18 @@ from typing import Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.error import NetworkError, RetryAfter, TimedOut, TelegramError
 
-from bot.telegram_bot import BOT_COMMANDS, build_app, send_listing, set_config as set_bot_config
+from bot.telegram_bot import (
+    BOT_COMMANDS,
+    build_app,
+    get_config,
+    send_listing,
+    set_config as set_bot_config,
+    set_runtime_callbacks,
+)
 from scraper.pipeline import scrape_new_listings
 from utils.config_loader import load_config
 from utils.logger import setup_logging
+from utils.config_store import load_runtime_config
 from utils.storage import default_seen_path, make_seen_entry, persist_seen
 
 
@@ -37,7 +45,7 @@ def _get_env(name: str) -> str:
 
 
 async def _send_one(app, chat_id: str, listing: dict[str, Any], cfg: dict[str, Any]) -> bool:
-    send_imgs = bool(cfg.get("send_images", True))
+    send_imgs = bool(cfg.get("send_images", False))
     for attempt in range(3):
         try:
             return await send_listing(
@@ -45,7 +53,7 @@ async def _send_one(app, chat_id: str, listing: dict[str, Any], cfg: dict[str, A
                 chat_id,
                 listing,
                 send_images=send_imgs,
-                max_photos=5,
+                max_photos=int(cfg.get("max_images") or 5),
             )
         except RetryAfter as e:
             await asyncio.sleep((getattr(e, "retry_after", 0) or 0) + 1)
@@ -65,10 +73,11 @@ async def _send_one(app, chat_id: str, listing: dict[str, Any], cfg: dict[str, A
 async def _job_cycle(
     app,
     chat_id: str | None,
-    cfg: dict[str, Any],
     seen_path: str,
+    cfg_get,
 ) -> None:
     started = time.monotonic()
+    cfg = cfg_get()
     try:
         listings = await scrape_new_listings(cfg, seen_path)
     except Exception as e:
@@ -92,6 +101,18 @@ async def _job_cycle(
                 l.get("location"),
                 len(l.get("images") or []),
             )
+        return
+
+    notify_enabled = bool(cfg.get("notify_enabled", True))
+    if not notify_enabled:
+        logger.info("Notify disabled: marking %d listings as seen.", len(to_send))
+        try:
+            batch = {}
+            for l in to_send:
+                batch.update(make_seen_entry(l))
+            persist_seen(seen_path, batch)
+        except Exception as e:
+            logger.error("persist seen (notify disabled): %s", e, exc_info=True)
         return
 
     logger.info("Sending %d listings…", len(to_send))
@@ -145,7 +166,8 @@ async def main() -> None:
     parser.add_argument("--test-scrape", action="store_true")
     args = parser.parse_args()
 
-    cfg = load_config()
+    base_cfg = load_config()
+    cfg = load_runtime_config(base_cfg)
     set_bot_config(cfg)
 
     bot_token = _get_env("BOT_TOKEN")
@@ -185,19 +207,44 @@ async def main() -> None:
     else:
         logger.warning("BOT_TOKEN/CHAT_ID missing — scrape-only mode.")
 
+    cfg_get = get_config
+    cycle_lock = asyncio.Lock()
+
+    async def _run_cycle() -> None:
+        async with cycle_lock:
+            await _job_cycle(
+                app,
+                chat_id if (bot_token and chat_id) else None,
+                seen_path,
+                cfg_get,
+            )
+
     sched = AsyncIOScheduler(timezone="UTC")
     sched.add_job(
-        _job_cycle,
+        _run_cycle,
         "interval",
-        minutes=int(cfg["interval_minutes"]),
-        args=[app, chat_id if (bot_token and chat_id) else None, cfg, seen_path],
+        minutes=int(cfg_get().get("interval_minutes") or 10),
         id="cycle",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=120,
     )
+
+    def _set_interval_minutes(new_minutes: int) -> None:
+        try:
+            mins = int(new_minutes)
+            sched.reschedule_job("cycle", trigger="interval", minutes=mins)
+        except Exception as e:
+            logger.warning("reschedule_job failed: %s", e)
+
+    async def _trigger_cycle() -> None:
+        # Avoid blocking Telegram UI; schedule the job in background.
+        asyncio.create_task(_run_cycle())
+
+    set_runtime_callbacks(_set_interval_minutes, _trigger_cycle)
+
     sched.start()
-    await _job_cycle(app, chat_id if (bot_token and chat_id) else None, cfg, seen_path)
+    await _run_cycle()
 
     stop = asyncio.Event()
 

@@ -42,15 +42,17 @@ def passes_filters(listing: dict[str, Any], cfg: dict[str, Any]) -> bool:
         elif city_cfg.lower() not in combined_loc:
             return False
 
-    price = listing.get("price")
-    if price is None:
-        return False
-    try:
-        p = int(price)
-        if p > int(cfg.get("max_price", 99999)):
+    max_price = cfg.get("max_price")
+    if max_price is not None:
+        price = listing.get("price")
+        if price is None:
             return False
-    except Exception:
-        return False
+        try:
+            p = int(price)
+            if p > int(float(max_price)):
+                return False
+        except Exception:
+            return False
 
     min_size = cfg.get("min_size")
     if min_size is not None:

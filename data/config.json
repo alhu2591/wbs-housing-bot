@@ -1,8 +1,8 @@
 {
   "city": "Berlin",
-  "max_price": 700,
-  "min_size": 30,
-  "rooms": 1,
+  "max_price": 700.0,
+  "min_size": 30.0,
+  "rooms": 1.0,
   "wbs_required": true,
   "interval_minutes": 10,
   "keywords_include": [],
@@ -29,8 +29,7 @@
     "immoscout",
     "wggesucht",
     "ebay_kleinanzeigen",
-    "immowelt",
-    "immonet"
+    "immowelt"
   ],
   "max_images": 5,
   "max_per_cycle": 5,
