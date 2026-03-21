@@ -52,7 +52,10 @@ def load_runtime_config(base_cfg: dict[str, Any]) -> dict[str, Any]:
             # If persistence fails, still run with base config.
             logger.warning("config_store: failed to initialize runtime config.")
         return dict(base_cfg)
-    out = dict(existing)
+    # Overlay runtime config on top of the validated base config.
+    # This makes older `data/config.json` files forward-compatible.
+    out = dict(base_cfg)
+    out.update(existing)
 
     # If `data/config.json` comes from an older base config, we still want new
     # portals added in the project `config.json` to become active automatically
