@@ -85,22 +85,30 @@ Edit **`config.json`** next to `main.py` (see [Configuration](#configuration)).
 
 ## Configuration
 
-All **search and notification behaviour** is driven by **`config.json`** (defaults are merged in code if keys are missing).
+All **search and notification behaviour** is driven by **`config.json`**.
+The bot expects `config.json` to contain all keys shown below.
+
+To disable a specific filter, set its value to `null` (for example `"max_price": null`).
+
+Telegram button changes are persisted to **`data/config.json`** and take effect immediately (including rescheduling the scrape interval).
 
 ### Main keys
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `city` | string | City filter (e.g. `Berlin`). |
-| `max_price` | number | Maximum **cold/warm** rent in **€** (integer comparison after normalisation). |
-| `min_size` | number | Minimum **living area** in **m²** (if extractable). |
-| `rooms` | number | Minimum **number of rooms** (if extractable). |
+| `city` | string | City filter (e.g. `Berlin`). Empty string disables city filtering. |
+| `max_price` | number or null | Maximum **cold/warm** rent in **€**. `null` disables the max-price filter. |
+| `min_size` | number or null | Minimum **living area** in **m²**. `null` disables the min-size filter. |
+| `rooms` | number or null | Minimum **number of rooms**. `null` disables the min-rooms filter. |
 | `wbs_required` | bool | If `true`, listing must look WBS/social or come from a **trusted public-housing** source. |
 | `wbs_filter` | array of strings | Extra phrases that count toward WBS / social wording (German). |
 | `keywords_include` | array | **All** of these substrings must appear in title/location/description (case-insensitive). Empty = no include filter. |
 | `keywords_exclude` | array | If any substring appears, the listing is **dropped**. |
+| `sources` | array of strings | Enabled portal/source IDs (scraper modules). Examples: `gewobag`, `degewo`, `howoge`, `stadtundland`, `deutschewohnen`, `berlinovo`, `vonovia`, `gesobau`, `wbm`, `immoscout`, `wggesucht`, `ebay_kleinanzeigen`, `immowelt`, `immonet`. |
 | `interval_minutes` | int | Minutes between scrape cycles (clamped **5–60** in code). |
-| `send_images` | bool | If `true`, send up to **5** images as a Telegram **media group** when URLs are available. |
+| `notify_enabled` | bool | If `false`, scrape+dedupe runs but Telegram notifications are not sent. |
+| `send_images` | bool | If `true`, send image albums as a Telegram **media group** when URLs are available. |
+| `max_images` | int | Max **images per listing** (media group). |
 | `max_per_cycle` | int | Max **new** listings to send per cycle (default range enforced in code). |
 | `detail_concurrency` | int | Parallel detail-page fetches (bounded for stability on mobile). |
 
@@ -114,6 +122,7 @@ All **search and notification behaviour** is driven by **`config.json`** (defaul
   "rooms": 1,
   "wbs_required": true,
   "interval_minutes": 10,
+  "notify_enabled": true,
   "keywords_include": [],
   "keywords_exclude": [],
   "send_images": true,
@@ -124,12 +133,29 @@ All **search and notification behaviour** is driven by **`config.json`** (defaul
     "wohnberechtigungsschein",
     "geförderte wohnung"
   ],
+  "sources": [
+    "gewobag",
+    "degewo",
+    "howoge",
+    "stadtundland",
+    "deutschewohnen",
+    "berlinovo",
+    "vonovia",
+    "gesobau",
+    "wbm",
+    "immoscout",
+    "wggesucht",
+    "ebay_kleinanzeigen",
+    "immowelt",
+    "immonet"
+  ],
+  "max_images": 5,
   "max_per_cycle": 5,
   "detail_concurrency": 4
 }
 ```
 
-After editing, restart the bot so changes take effect.
+After editing `config.json`, restart the bot so changes take effect.
 
 ---
 
@@ -185,23 +211,25 @@ Use your preferred **Termux widget** or automation to run a short script that `c
 ```
 wbs-housing-bot/
 ├── main.py                 # Entry point: scheduler + optional Telegram polling
-├── config.json             # User-tunable filters and behaviour
+├── config.json             # Base filters + behaviour
 ├── requirements.txt        # Python dependencies
 ├── .env.example            # Template for BOT_TOKEN / CHAT_ID
 ├── data/
-│   └── seen.json           # Deduplication store (auto-updated)
+│   ├── seen.json           # Deduplication store (auto-updated)
+│   └── config.json        # Runtime config persisted from Telegram UI
 ├── logs/
 │   └── bot.log             # Rotating file log (if writable)
 ├── scraper/
 │   ├── base_scraper.py     # httpx client, headers, retries
 │   ├── detail_page.py      # Per-URL enrichment (HTML → fields + images)
 │   ├── pipeline.py         # Overview → dedupe → enrich → filter
-│   ├── registry.py         # List of all site scrapers
+│   ├── registry.py         # Portal/source registry
 │   └── *.py                # One module per portal (e.g. gewobag, berlinovo, …)
 ├── bot/
-│   └── telegram_bot.py     # Commands, caption formatting, media groups
+│   └── telegram_bot.py     # Inline UI + sending listings
 └── utils/
-    ├── config_loader.py    # Load & normalise config.json
+    ├── config_loader.py    # Load & validate config.json
+    ├── config_store.py     # Persist Telegram runtime config to data/config.json
     ├── parser.py           # Price, rooms, size, WBS helpers, listing builder
     ├── filters.py          # Apply config rules to a listing dict
     ├── storage.py          # Read/write seen.json
@@ -229,18 +257,24 @@ Exact wording may evolve slightly; the goal is **scannable, professional German 
 
 ### How images are sent
 
-- If `send_images` is **true** and image URLs were collected, the bot sends a **media group** with up to **5** photos.
+- If `send_images` is **true** and image URLs were collected, the bot sends a **media group** with up to `max_images` photos.
 - The **first** image carries the **caption** (Telegram limit 1024 characters for photo captions).
 - If the album fails (e.g. bad URL), the bot **falls back** to a text-only message.
 - A small follow-up with an **“Öffnen”** link button may appear after a successful album.
 
 ### How filtering works
-
-1. **Overview** results from all configured site scrapers are merged.  
+1. **Overview** results from the active `sources` portals in `config.json` are merged.  
 2. Listings **already in** `data/seen.json` are skipped.  
 3. Each **candidate** is fetched again (**detail page**) to improve description, images, size, rooms, and WBS hints.  
 4. **`utils/filters.py`** applies `config.json` (price, size, rooms, city, WBS, keywords).  
-5. Up to **`max_per_cycle`** listings are sent; successful sends are appended to **`seen.json`**.
+5. If `notify_enabled` is `true`, up to **`max_per_cycle`** listings are sent; successful sends are appended to **`seen.json`**.  
+   If `notify_enabled` is `false`, matches are still marked as seen, but Telegram notifications are not sent.
+
+### Telegram UI (inline settings)
+
+- Use `/settings` to open the inline keyboard menu.
+- Buttons let you update `city`, `max_price`, `min_size`, `rooms`, WBS requirement, keywords include/exclude, enabled `sources`, notification interval, and `send_images`.
+- Changes persist to `data/config.json` and are applied immediately (interval changes reschedule the job).
 
 ---
 
