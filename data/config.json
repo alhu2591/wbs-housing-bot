@@ -34,7 +34,9 @@
     "wggesucht",
     "ebay_kleinanzeigen",
     "immowelt",
-    "immonet"
+    "immonet",
+    "inberlinwohnen",
+    "wohnungsgilde"
   ],
   "max_images": 5,
   "max_per_cycle": 5,

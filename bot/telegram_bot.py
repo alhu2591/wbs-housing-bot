@@ -32,16 +32,35 @@ logger = logging.getLogger(__name__)
 _CFG: dict[str, Any] = {}
 
 BOT_COMMANDS = [
-    BotCommand("start", "Start"),
-    BotCommand("status", "Show config"),
-    BotCommand("settings", "Open settings menu"),
-    BotCommand("ping", "Health check"),
+    BotCommand("start", "بدء تشغيل البوت"),
+    BotCommand("status", "عرض الإعدادات الحالية"),
+    BotCommand("settings", "فتح لوحة الإعدادات"),
+    BotCommand("ping", "فحص حالة البوت"),
 ]
 
 _runtime_on_interval_change: Callable[[int], None] | None = None
 _runtime_trigger_cycle: Callable[[], Awaitable[None]] | None = None
 
 WBS_LEVEL_OPTIONS = [100, 120, 140, 160, 180, 200]
+
+SOURCE_LABELS_AR: dict[str, str] = {
+    "immoscout": "ImmobilienScout24",
+    "immonet": "Immonet",
+    "wggesucht": "WG-Gesucht",
+    "ebay_kleinanzeigen": "eBay Kleinanzeigen",
+    "vonovia": "Vonovia",
+    "gewobag": "Gewobag",
+    "deutschewohnen": "Deutsche Wohnen",
+    "wohnungsgilde": "Wohnungsgilde",
+    "gesobau": "GESOBAU",
+    "howoge": "Howoge",
+    "degewo": "degewo",
+    "wbm": "WBM",
+    "berlinovo": "Berlinovo",
+    "stadtundland": "STADT UND LAND",
+    "immowelt": "Immowelt",
+    "inberlinwohnen": "inberlinwohnen",
+}
 
 
 def set_runtime_callbacks(
@@ -71,7 +90,7 @@ def _persist_cfg() -> None:
 
 def _fmt_maybe_int(v: Any) -> str:
     if v is None:
-        return "off"
+        return "معطل"
     try:
         fv = float(v)
         if fv.is_integer():
@@ -83,7 +102,7 @@ def _fmt_maybe_int(v: Any) -> str:
 
 def _fmt_price(v: Any) -> str:
     if v is None:
-        return "off"
+        return "معطل"
     try:
         return f"{int(float(v))}"
     except Exception:
@@ -102,17 +121,18 @@ def format_listing_caption(listing: dict[str, Any]) -> str:
     rooms = listing.get("rooms")
     sz_s = f"{sz:.0f} m²" if sz is not None else "—"
     r_s = str(rooms) if rooms is not None else "—"
-    wbs = str(listing.get("wbs_label") or ("Ja" if listing.get("trusted_wbs") else "—"))
+    wbs_level = listing.get("wbs_level")
+    wbs = str(listing.get("wbs_label") or ("نعم" if listing.get("trusted_wbs") else "—"))
     url = str(listing.get("url") or "").strip()
     desc = str(listing.get("description") or "").strip()
     if len(desc) > 400:
         desc = desc[:397] + "…"
     lines = [
         title,
-        f"Preis: {price_s}",
-        f"Ort: {loc_line}",
-        f"Fläche: {sz_s} · Zimmer: {r_s}",
-        f"WBS: {wbs}",
+        f"السعر: {price_s}",
+        f"الموقع: {loc_line}",
+        f"المساحة: {sz_s} · الغرف: {r_s}",
+        f"WBS: {wbs}" + (f" (المستوى: {wbs_level})" if wbs_level is not None else ""),
     ]
     if desc:
         lines.append("")
@@ -142,27 +162,27 @@ def _menu_main(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     max_images = int(cfg.get("max_images") or 5)
 
     text = (
-        "WBS Housing Bot (Berlin)\n\n"
-        f"Stadt: {city or 'alle'}\n"
-        f"Bezirke: {len(selected_districts)} ausgewaehlt\n"
-        f"Max. Preis: {_fmt_price(max_price)} €\n"
-        f"Min. Fläche: {_fmt_maybe_int(min_size)} m²\n"
-        f"Min. Zimmer: {_fmt_maybe_int(rooms)}\n"
-        f"WBS erforderlich: {'Ja' if wbs_required else 'Nein'}\n"
-        f"WBS Stufe <= {wbs_level if wbs_level is not None else 'off'}\n"
-        f"Jobcenter: {'Ja' if jobcenter_required else 'Nein'} | Wohnungsgilde: {'Ja' if wohnungsgilde_required else 'Nein'}\n"
-        f"Quellen aktiv: {len(sources)}\n"
-        f"Benachrichtigungen: {'ON' if notify_enabled else 'OFF'}\n"
-        f"Bilder: {'ON' if send_images else 'OFF'} (max {max_images})\n"
-        f"Intervall: {int(cfg.get('interval_minutes') or 10)} min\n"
+        "بوت سكن برلين (WBS)\n\n"
+        f"المدينة: {city or 'الكل'}\n"
+        f"المناطق المختارة: {len(selected_districts)}\n"
+        f"أقصى سعر: {_fmt_price(max_price)} €\n"
+        f"أقل مساحة: {_fmt_maybe_int(min_size)} م²\n"
+        f"أقل عدد غرف: {_fmt_maybe_int(rooms)}\n"
+        f"WBS مطلوب: {'نعم' if wbs_required else 'لا'}\n"
+        f"مستوى WBS <= {wbs_level if wbs_level is not None else 'معطل'}\n"
+        f"Jobcenter: {'مفعل' if jobcenter_required else 'معطل'} | Wohnungsgilde: {'مفعل' if wohnungsgilde_required else 'معطل'}\n"
+        f"المصادر المفعلة: {len(sources)}\n"
+        f"الإشعارات: {'مفعلة' if notify_enabled else 'متوقفة'}\n"
+        f"الصور: {'نعم' if send_images else 'لا'} (الحد الأقصى {max_images})\n"
+        f"الفاصل الزمني: {int(cfg.get('interval_minutes') or 10)} دقيقة\n"
     )
 
     kb = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("Filter", callback_data="ui:filters")],
-            [InlineKeyboardButton("Quellen", callback_data="ui:sources")],
-            [InlineKeyboardButton("Benachrichtigungen", callback_data="ui:notify")],
-            [InlineKeyboardButton("Medien", callback_data="ui:media")],
+            [InlineKeyboardButton("الفلاتر", callback_data="ui:filters")],
+            [InlineKeyboardButton("مصادر السكن", callback_data="ui:sources")],
+            [InlineKeyboardButton("الإشعارات", callback_data="ui:notify")],
+            [InlineKeyboardButton("الصور والوسائط", callback_data="ui:media")],
         ]
     )
     return text, kb
@@ -182,64 +202,64 @@ def _menu_filters(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     kw_exc = cfg.get("keywords_exclude") or []
 
     text = (
-        "Filter Einstellungen\n\n"
-        f"Stadt: {city or 'alle'}\n"
-        f"Bezirke: {len(selected_districts)}\n"
-        f"Max. Preis: {_fmt_price(max_price)} €\n"
-        f"Min. Fläche: {_fmt_maybe_int(min_size)} m²\n"
-        f"Min. Zimmer: {_fmt_maybe_int(rooms)}\n"
-        f"WBS erforderlich: {'Ja' if wbs_required else 'Nein'}\n"
-        f"WBS Stufe <= {wbs_level if wbs_level is not None else 'off'}\n"
-        f"Jobcenter: {'Ja' if jobcenter_required else 'Nein'} | Wohnungsgilde: {'Ja' if wohnungsgilde_required else 'Nein'}\n"
-        f"Keywords include: {len(kw_inc)} | exclude: {len(kw_exc)}\n"
+        "إعدادات الفلاتر\n\n"
+        f"المدينة: {city or 'الكل'}\n"
+        f"المناطق: {len(selected_districts)}\n"
+        f"أقصى سعر: {_fmt_price(max_price)} €\n"
+        f"أقل مساحة: {_fmt_maybe_int(min_size)} م²\n"
+        f"أقل عدد غرف: {_fmt_maybe_int(rooms)}\n"
+        f"WBS مطلوب: {'نعم' if wbs_required else 'لا'}\n"
+        f"مستوى WBS <= {wbs_level if wbs_level is not None else 'معطل'}\n"
+        f"Jobcenter: {'مفعل' if jobcenter_required else 'معطل'} | Wohnungsgilde: {'مفعل' if wohnungsgilde_required else 'معطل'}\n"
+        f"الكلمات المفتاحية: تضمين {len(kw_inc)} | استبعاد {len(kw_exc)}\n"
     )
 
     kb = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton(f"Stadt: {city or 'alle'}", callback_data="ui:prompt:city")],
-            [InlineKeyboardButton(f"Bezirke waehlen ({len(selected_districts)})", callback_data="ui:districts")],
+            [InlineKeyboardButton(f"المدينة: {city or 'الكل'}", callback_data="ui:prompt:city")],
+            [InlineKeyboardButton(f"اختيار المناطق ({len(selected_districts)})", callback_data="ui:districts")],
             [
                 InlineKeyboardButton("-50 €", callback_data="ui:delta:max_price:-50"),
                 InlineKeyboardButton("+50 €", callback_data="ui:delta:max_price:50"),
             ],
             [
-                InlineKeyboardButton("Set Max. Preis", callback_data="ui:prompt:max_price"),
-                InlineKeyboardButton("Max. Preis aus", callback_data="ui:disable:max_price"),
+                InlineKeyboardButton("تحديد أقصى سعر", callback_data="ui:prompt:max_price"),
+                InlineKeyboardButton("تعطيل أقصى سعر", callback_data="ui:disable:max_price"),
             ],
             [
                 InlineKeyboardButton("-5 m²", callback_data="ui:delta:min_size:-5"),
                 InlineKeyboardButton("+5 m²", callback_data="ui:delta:min_size:5"),
             ],
             [
-                InlineKeyboardButton("Set Min. Fläche", callback_data="ui:prompt:min_size"),
-                InlineKeyboardButton("Min. Fläche aus", callback_data="ui:disable:min_size"),
+                InlineKeyboardButton("تحديد أقل مساحة", callback_data="ui:prompt:min_size"),
+                InlineKeyboardButton("تعطيل أقل مساحة", callback_data="ui:disable:min_size"),
             ],
             [
-                InlineKeyboardButton("-1 Zimmer", callback_data="ui:delta:rooms:-1"),
-                InlineKeyboardButton("+1 Zimmer", callback_data="ui:delta:rooms:1"),
+                InlineKeyboardButton("-1 غرفة", callback_data="ui:delta:rooms:-1"),
+                InlineKeyboardButton("+1 غرفة", callback_data="ui:delta:rooms:1"),
             ],
             [
-                InlineKeyboardButton("Set Zimmer", callback_data="ui:prompt:rooms"),
-                InlineKeyboardButton("Zimmer aus", callback_data="ui:disable:rooms"),
+                InlineKeyboardButton("تحديد عدد الغرف", callback_data="ui:prompt:rooms"),
+                InlineKeyboardButton("تعطيل الغرف", callback_data="ui:disable:rooms"),
             ],
             [
-                InlineKeyboardButton(f"WBS: {'Ja' if wbs_required else 'Nein'}", callback_data="ui:toggle:wbs_required"),
-                InlineKeyboardButton("Keywords", callback_data="ui:keywords"),
+                InlineKeyboardButton(f"WBS: {'نعم' if wbs_required else 'لا'}", callback_data="ui:toggle:wbs_required"),
+                InlineKeyboardButton("الكلمات المفتاحية", callback_data="ui:keywords"),
             ],
             [
-                InlineKeyboardButton(f"WBS-Level: {wbs_level if wbs_level is not None else 'off'}", callback_data="ui:wbs_level"),
+                InlineKeyboardButton(f"مستوى WBS: {wbs_level if wbs_level is not None else 'معطل'}", callback_data="ui:wbs_level"),
             ],
             [
                 InlineKeyboardButton(
-                    f"Jobcenter: {'ON' if jobcenter_required else 'OFF'}",
+                    f"Jobcenter: {'مفعل' if jobcenter_required else 'معطل'}",
                     callback_data="ui:toggle:jobcenter_required",
                 ),
                 InlineKeyboardButton(
-                    f"Wohnungsgilde: {'ON' if wohnungsgilde_required else 'OFF'}",
+                    f"Wohnungsgilde: {'مفعل' if wohnungsgilde_required else 'معطل'}",
                     callback_data="ui:toggle:wohnungsgilde_required",
                 ),
             ],
-            [InlineKeyboardButton("Zurück", callback_data="ui:main")],
+            [InlineKeyboardButton("رجوع", callback_data="ui:main")],
         ]
     )
     return text, kb
@@ -249,9 +269,9 @@ def _menu_districts(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     selected = set(normalize_districts(cfg.get("districts") or []))
     district_names = list(BERLIN_DISTRICT_ALIASES.keys())
     text = (
-        "Berlin Bezirke (Mehrfachauswahl)\n\n"
-        f"Ausgewaehlt: {len(selected)}/{len(district_names)}\n"
-        "Hinweis: Nur Listings aus mindestens einem ausgewaehlten Bezirk werden gesendet."
+        "اختيار مناطق برلين (اختيار متعدد)\n\n"
+        f"المختار: {len(selected)}/{len(district_names)}\n"
+        "ملاحظة: سيتم إرسال الإعلانات المطابقة لمناطقك المختارة فقط."
     )
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
@@ -266,21 +286,21 @@ def _menu_districts(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
         rows.append(row)
     rows.append(
         [
-            InlineKeyboardButton("Alle Bezirke", callback_data="ui:districts:all"),
-            InlineKeyboardButton("Keine Bezirke", callback_data="ui:districts:none"),
+            InlineKeyboardButton("تفعيل كل المناطق", callback_data="ui:districts:all"),
+            InlineKeyboardButton("إلغاء كل المناطق", callback_data="ui:districts:none"),
         ]
     )
-    rows.append([InlineKeyboardButton("Zurueck", callback_data="ui:filters")])
+    rows.append([InlineKeyboardButton("رجوع", callback_data="ui:filters")])
     return text, InlineKeyboardMarkup(rows)
 
 
 def _menu_wbs_level(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     lvl = cfg.get("wbs_level")
-    text = "WBS Level Filter\n\n"
+    text = "فلتر مستوى WBS\n\n"
     if lvl is not None:
-        text += f"Aktiv: <= {lvl}"
+        text += f"المستوى المفعل: <= {lvl}"
     else:
-        text += "WBS Level: off"
+        text += "المستوى: معطل"
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
     for opt in WBS_LEVEL_OPTIONS:
@@ -291,8 +311,8 @@ def _menu_wbs_level(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton("Level aus", callback_data="ui:set_wbs_level:none")])
-    rows.append([InlineKeyboardButton("Zurueck", callback_data="ui:filters")])
+    rows.append([InlineKeyboardButton("تعطيل المستوى", callback_data="ui:set_wbs_level:none")])
+    rows.append([InlineKeyboardButton("رجوع", callback_data="ui:filters")])
     return text, InlineKeyboardMarkup(rows)
 
 
@@ -309,22 +329,22 @@ def _menu_keywords(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
         return s
 
     text = (
-        "Keywords (Substrings, case-insensitive)\n\n"
-        f"Include ({len(kw_inc)}): {_sample(kw_inc)}\n"
-        f"Exclude ({len(kw_exc)}): {_sample(kw_exc)}\n"
+        "الكلمات المفتاحية (مطابقة جزئية)\n\n"
+        f"تضمين ({len(kw_inc)}): {_sample(kw_inc)}\n"
+        f"استبعاد ({len(kw_exc)}): {_sample(kw_exc)}\n"
     )
 
     kb = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Add include", callback_data="ui:prompt:kw_include"),
-                InlineKeyboardButton("Clear include", callback_data="ui:clear:kw_include"),
+                InlineKeyboardButton("إضافة تضمين", callback_data="ui:prompt:kw_include"),
+                InlineKeyboardButton("مسح التضمين", callback_data="ui:clear:kw_include"),
             ],
             [
-                InlineKeyboardButton("Add exclude", callback_data="ui:prompt:kw_exclude"),
-                InlineKeyboardButton("Clear exclude", callback_data="ui:clear:kw_exclude"),
+                InlineKeyboardButton("إضافة استبعاد", callback_data="ui:prompt:kw_exclude"),
+                InlineKeyboardButton("مسح الاستبعاد", callback_data="ui:clear:kw_exclude"),
             ],
-            [InlineKeyboardButton("Zurück", callback_data="ui:filters")],
+            [InlineKeyboardButton("رجوع", callback_data="ui:filters")],
         ]
     )
     return text, kb
@@ -333,15 +353,15 @@ def _menu_keywords(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
 def _menu_sources(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     enabled = set(cfg.get("sources") or [])
     text = (
-        "Quellen (Portale) auswählen\n\n"
-        "Aktivierte Quellen werden beim nächsten Cycle gescraped.\n"
-        f"Aktiv: {len(enabled)}/{len(ALL_SOURCE_IDS)}"
+        "اختيار مصادر السكن\n\n"
+        "المصادر المفعلة يتم سحبها تلقائيا في الدورة التالية.\n"
+        f"المفعل: {len(enabled)}/{len(ALL_SOURCE_IDS)}"
     )
 
     buttons = []
     for sid in ALL_SOURCE_IDS:
         on = sid in enabled
-        label = ("[ON] " if on else "[OFF] ") + sid
+        label = ("[ON] " if on else "[OFF] ") + SOURCE_LABELS_AR.get(sid, sid)
         buttons.append(InlineKeyboardButton(label, callback_data=f"ui:toggle_src:{sid}"))
 
     rows: list[list[InlineKeyboardButton]] = []
@@ -356,11 +376,11 @@ def _menu_sources(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
 
     rows.append(
         [
-            InlineKeyboardButton("Alle an", callback_data="ui:sources:all"),
-            InlineKeyboardButton("Alle aus", callback_data="ui:sources:none"),
+            InlineKeyboardButton("تفعيل الكل", callback_data="ui:sources:all"),
+            InlineKeyboardButton("تعطيل الكل", callback_data="ui:sources:none"),
         ]
     )
-    rows.append([InlineKeyboardButton("Zurück", callback_data="ui:main")])
+    rows.append([InlineKeyboardButton("رجوع", callback_data="ui:main")])
 
     kb = InlineKeyboardMarkup(rows)
     return text, kb
@@ -371,9 +391,9 @@ def _menu_notify(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     interval = int(cfg.get("interval_minutes") or 10)
 
     text = (
-        "Benachrichtigungen\n\n"
-        f"Status: {'ON' if notify_enabled else 'OFF'}\n"
-        f"Intervall: {interval} Minuten\n"
+        "الإشعارات\n\n"
+        f"الحالة: {'مفعلة' if notify_enabled else 'متوقفة'}\n"
+        f"الفاصل الزمني: {interval} دقيقة\n"
     )
 
     kb = InlineKeyboardMarkup(
@@ -383,10 +403,10 @@ def _menu_notify(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
                 InlineKeyboardButton("+5", callback_data="ui:delta:interval_minutes:5"),
             ],
             [
-                InlineKeyboardButton("Set Intervall", callback_data="ui:prompt:interval_minutes"),
-                InlineKeyboardButton("Zurück", callback_data="ui:main"),
+                InlineKeyboardButton("تحديد الفاصل الزمني", callback_data="ui:prompt:interval_minutes"),
+                InlineKeyboardButton("رجوع", callback_data="ui:main"),
             ],
-            [InlineKeyboardButton(f"Notify: {'ON' if notify_enabled else 'OFF'}", callback_data="ui:toggle:notify_enabled")],
+            [InlineKeyboardButton(f"الإشعارات: {'مفعلة' if notify_enabled else 'متوقفة'}", callback_data="ui:toggle:notify_enabled")],
         ]
     )
     return text, kb
@@ -397,21 +417,21 @@ def _menu_media(cfg: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     max_images = int(cfg.get("max_images") or 5)
 
     text = (
-        "Medien / Bilder\n\n"
-        f"Bilder senden: {'ON' if send_images else 'OFF'}\n"
-        f"Max. Bilder pro Anzeige: {max_images}\n"
+        "الصور والوسائط\n\n"
+        f"إرسال الصور: {'نعم' if send_images else 'لا'}\n"
+        f"الحد الأقصى للصور لكل إعلان: {max_images}\n"
     )
 
     kb = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton(f"Bilder: {'ON' if send_images else 'OFF'}", callback_data="ui:toggle:send_images")],
+            [InlineKeyboardButton(f"إرسال الصور: {'نعم' if send_images else 'لا'}", callback_data="ui:toggle:send_images")],
             [
                 InlineKeyboardButton("-1", callback_data="ui:delta:max_images:-1"),
                 InlineKeyboardButton("+1", callback_data="ui:delta:max_images:1"),
             ],
             [
-                InlineKeyboardButton("Set max Bilder", callback_data="ui:prompt:max_images"),
-                InlineKeyboardButton("Zurück", callback_data="ui:main"),
+                InlineKeyboardButton("تحديد الحد الأقصى للصور", callback_data="ui:prompt:max_images"),
+                InlineKeyboardButton("رجوع", callback_data="ui:main"),
             ],
         ]
     )
@@ -433,7 +453,7 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = get_config()
     text = (
-        "Aktuelle Config (effektiv):\n"
+        "الإعدادات الحالية:\n"
         f"city={cfg.get('city')}\n"
         f"districts={cfg.get('districts')}\n"
         f"max_price={cfg.get('max_price')}\n"
@@ -453,7 +473,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("pong")
+    await update.message.reply_text("البوت يعمل بشكل طبيعي")
 
 
 def _parse_optional_float(text: str) -> float | None:
@@ -745,22 +765,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 def _prompt_text_for_key(key: str) -> str:
     if key == "city":
-        return "Schreibe die Stadt (z.B. Berlin). Leere Nachricht = alle."
+        return "اكتب اسم المدينة (مثال: Berlin). رسالة فارغة = كل المدن."
     if key == "max_price":
-        return "Max. Preis in € als Zahl senden (z.B. 700) oder 'none' zum Deaktivieren."
+        return "أرسل أقصى سعر باليورو (مثال: 700) أو none للتعطيل."
     if key == "min_size":
-        return "Min. Fläche in m² senden (z.B. 30) oder 'none' zum Deaktivieren."
+        return "أرسل أقل مساحة بالمتر (مثال: 30) أو none للتعطيل."
     if key == "rooms":
-        return "Min. Zimmer senden (z.B. 1) oder 'none' zum Deaktivieren."
+        return "أرسل أقل عدد غرف (مثال: 1) أو none للتعطيل."
     if key == "interval_minutes":
-        return "Intervall in Minuten senden (5–60)."
+        return "أرسل فترة الإشعارات بالدقائق (5-60)."
     if key == "max_images":
-        return "Max. Bilder senden (1–10)."
+        return "أرسل الحد الأقصى للصور (1-10)."
     if key == "kw_include":
-        return "Include-Keyword senden (Substring)."
+        return "أرسل كلمة تضمين (مطابقة جزئية)."
     if key == "kw_exclude":
-        return "Exclude-Keyword senden (Substring)."
-    return "Wert senden."
+        return "أرسل كلمة استبعاد (مطابقة جزئية)."
+    return "أرسل القيمة المطلوبة."
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -821,7 +841,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if key == "interval_minutes" and _runtime_on_interval_change:
         _runtime_on_interval_change(int(float(get_config().get("interval_minutes") or 10)))
 
-    await update.message.reply_text("Config updated. Neues Scraping folgt bei relevantem Change…")
+    await update.message.reply_text("تم تحديث الإعدادات. سيتم تطبيقها فوراً في دورة السحب التالية.")
     await _maybe_trigger_cycle()
 
     cfg = get_config()
@@ -866,7 +886,7 @@ async def send_listing(
                     media.append(InputMediaPhoto(media=u))
             await bot.send_media_group(chat_id=chat_id, media=media)
             if kb:
-                await bot.send_message(chat_id=chat_id, text="Anzeige öffnen", reply_markup=kb)
+                await bot.send_message(chat_id=chat_id, text="فتح الإعلان", reply_markup=kb)
             return True
         except Exception as e:
             logger.warning("send_media_group failed, fallback to text: %s", e)

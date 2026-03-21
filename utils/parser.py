@@ -28,6 +28,21 @@ DEFAULT_WBS_PHRASES = [
 ]
 
 
+def extract_wbs_level(text: str) -> int | None:
+    if not text:
+        return None
+    m = re.search(r"wbs[\s\-_]*([0-9]{2,3})", text, re.I)
+    if not m:
+        return None
+    try:
+        level = int(m.group(1))
+    except Exception:
+        return None
+    if 80 <= level <= 220:
+        return level
+    return None
+
+
 def normalize_url(url: str) -> str:
     try:
         parsed = urlparse(url)
@@ -184,6 +199,7 @@ def build_listing(
     loc = clean_text(location or "Berlin", 120)
     desc = (description or "").strip()[:8000]
     is_wbs, wbs_detect = detect_wbs(f"{title} {loc} {desc}", None)
+    wbs_level = extract_wbs_level(f"{title} {desc} {wbs_label}")
     final_wbs = wbs_label or (wbs_detect if is_wbs else "")
 
     return {
@@ -197,6 +213,7 @@ def build_listing(
         "size_m2": float(size_m2) if size_m2 is not None else None,
         "description": desc,
         "wbs_label": final_wbs,
+        "wbs_level": wbs_level,
         "trusted_wbs": trusted_wbs or bool(is_wbs),
         "url": url,
         "source": source,

@@ -16,6 +16,7 @@ from utils.parser import (
     absolutize_image_url,
     dedupe_preserve_order,
     detect_wbs,
+    extract_wbs_level,
     parse_price_eur,
     parse_size_m2,
     parse_rooms,
@@ -138,6 +139,10 @@ async def enrich_listing(client: httpx.AsyncClient, listing: dict[str, Any]) -> 
         if is_wbs and not listing.get("wbs_label"):
             listing["wbs_label"] = label
             listing["trusted_wbs"] = True
+        if listing.get("wbs_level") is None:
+            lvl = extract_wbs_level(f"{listing.get('title','')} {listing.get('description','')} {blob}")
+            if lvl is not None:
+                listing["wbs_level"] = lvl
 
         if listing.get("price") is None:
             m = re.search(

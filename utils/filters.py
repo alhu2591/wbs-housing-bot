@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 # Sources scraped via WBS-specific endpoints (overview already WBS-oriented)
 WBS_TRUSTED_SOURCES = frozenset({
     "gewobag", "degewo", "howoge", "stadtundland", "deutschewohnen",
-    "berlinovo", "vonovia", "gesobau", "wbm",
+    "berlinovo", "vonovia", "gesobau", "wbm", "wohnungsgilde",
 })
 
 # Canonical Berlin districts (borough-level)
@@ -92,6 +92,14 @@ def _matches_any_selected_district(listing: dict[str, Any], selected: list[str])
 
 
 def _extract_wbs_level(listing: dict[str, Any]) -> int | None:
+    existing = listing.get("wbs_level")
+    if existing is not None:
+        try:
+            lvl = int(existing)
+            if 80 <= lvl <= 220:
+                return lvl
+        except Exception:
+            pass
     hay = _haystack(listing)
     m = re.search(r"wbs[\s\-_]*([0-9]{2,3})", hay, re.I)
     if not m:
