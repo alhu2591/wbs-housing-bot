@@ -1,142 +1,130 @@
 """
-Scrape cycle: overview → dedupe → detail enrich → config filters.
+scraper/pipeline.py — Upgraded pipeline with AI enrichment + SQLite dedup.
+Backward-compatible with existing scraper modules.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable
+import time
+from typing import Any
 
-import httpx
-
-from scraper.base_scraper import build_client
-from scraper.detail_page import enrich_listings_batch
-from scraper.registry import select_scraper_pairs
-from utils.dedup_hash import listing_content_hash, listing_image_fingerprint
-from utils.filters import passes_filters
-from utils.source_health import is_in_cooldown, record_fail, record_ok
-from utils.storage import get_seen_store
+from utils.filters import apply_filters
 
 logger = logging.getLogger(__name__)
 
 
-def _quick_prefilter(listing: dict[str, Any], cfg: dict[str, Any]) -> bool:
-    """Cheap filter before HTTP detail fetch (price + rough city)."""
-    city_cfg = str(cfg.get("city") or "").strip()
-    loc = f"{listing.get('location','')} {listing.get('district','')} {listing.get('city','')}".lower()
-    if city_cfg:
-        if city_cfg.lower() == "berlin":
-            if not str(listing.get("location") or listing.get("district") or listing.get("city") or "").strip():
-                return False
-        elif city_cfg.lower() not in loc:
-            return False
-    max_price = cfg.get("max_price")
-    if max_price is not None:
-        p = listing.get("price")
-        if p is None:
-            return False
-        try:
-            if int(p) > int(float(max_price)):
-                return False
-        except Exception:
-            return False
-    return True
-
-
-async def _safe_scrape(
-    source_id: str,
-    fn: Callable[[], Awaitable[list]],
-    timeout: float,
-    sem: asyncio.Semaphore,
+async def scrape_new_listings(
+    cfg: dict[str, Any],
+    seen_path: str,
 ) -> list[dict[str, Any]]:
-    if is_in_cooldown(source_id):
+    start = time.monotonic()
+
+    raw_listings = await _run_all_scrapers(cfg)
+    logger.info("Pipeline: %d raw listings from scrapers.", len(raw_listings))
+    if not raw_listings:
         return []
-    async with sem:
+
+    unseen = _deduplicate(raw_listings)
+    logger.info("Pipeline: %d unseen after dedup.", len(unseen))
+    if not unseen:
+        return []
+
+    concurrency = int(cfg.get("detail_concurrency") or 4)
+    enriched = await _enrich_all(unseen, cfg, concurrency)
+    logger.info("Pipeline: %d enriched.", len(enriched))
+
+    filtered = [l for l in enriched if apply_filters(l, cfg)]
+    logger.info("Pipeline: %d after config filters.", len(filtered))
+
+    try:
+        from ai.scorer import enrich_listing
+        for listing in filtered:
+            enrich_listing(listing, cfg)
+    except ImportError:
+        logger.debug("ai.scorer not available — skipping AI enrichment.")
+
+    filtered.sort(key=lambda l: l.get("score", 0), reverse=True)
+    logger.info("Pipeline done: %d matches in %.1fs.", len(filtered), time.monotonic() - start)
+    return filtered
+
+
+async def _run_all_scrapers(cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    try:
+        from scraper.registry_adapter import get_all_scrapers
+        scrapers = get_all_scrapers(cfg)
+    except ImportError:
         try:
-            res = await asyncio.wait_for(fn(), timeout=timeout)
-            lst = res if isinstance(res, list) else []
-            record_ok(source_id)
-            return lst
-        except asyncio.TimeoutError:
-            record_fail(source_id, "timeout")
-            logger.error("Scraper %s timed out after %.0fs", source_id, timeout)
-            return []
-        except Exception as e:
-            record_fail(source_id, str(e))
-            logger.error("Scraper %s failed: %s", source_id, e)
+            from scraper.registry import SCRAPER_REGISTRY
+            scrapers = SCRAPER_REGISTRY
+        except ImportError:
+            logger.warning("No scraper registry found.")
             return []
 
-
-async def scrape_new_listings(cfg: dict[str, Any], seen_path: str) -> list[dict[str, Any]]:
-    store = get_seen_store()
-    seen_ids = store.load_id_set()
-    seen_content = store.load_content_hashes()
-    seen_img = store.load_image_fingerprints()
-
-    pairs = select_scraper_pairs(cfg)
-    timeout = float(cfg.get("source_timeout_seconds") or 90)
-    scrape_cap = min(5, max(1, int(cfg.get("scrape_concurrency") or 5)))
-    sem = asyncio.Semaphore(scrape_cap)
-
-    tasks = [
-        asyncio.create_task(_safe_scrape(sid, fn, timeout, sem))
-        for sid, fn in pairs
-    ]
-    if not tasks:
-        logger.info("No scrapers enabled.")
+    if not scrapers:
         return []
 
-    batches = await asyncio.gather(*tasks)
-    raw: list[dict[str, Any]] = []
-    for b in batches:
-        raw.extend(b)
+    semaphore = asyncio.Semaphore(5)
 
-    by_id: dict[str, dict[str, Any]] = {}
-    batch_hashes: set[str] = set()
-    batch_img: set[str] = set()
+    async def _safe_scrape(source_id: str, fn) -> list[dict]:
+        async with semaphore:
+            try:
+                if asyncio.iscoroutinefunction(fn):
+                    return await asyncio.wait_for(fn(cfg), timeout=30)
+                else:
+                    import functools
+                    loop = asyncio.get_event_loop()
+                    return await loop.run_in_executor(None, functools.partial(fn, cfg))
+            except asyncio.TimeoutError:
+                logger.warning("Scraper %s timed out.", source_id)
+                return []
+            except Exception as e:
+                logger.warning("Scraper %s error: %s", source_id, e)
+                return []
 
-    for listing in raw:
-        lid = str(listing.get("id") or "")
-        if not lid or lid in seen_ids or lid in by_id:
-            continue
-        ch = listing_content_hash(listing)
-        if ch in seen_content or ch in batch_hashes:
-            continue
-        ih = listing_image_fingerprint(listing)
-        if ih and (ih in seen_img or ih in batch_img):
-            continue
-        if not _quick_prefilter(listing, cfg):
-            continue
+    tasks = [_safe_scrape(sid, fn) for sid, fn in scrapers.items()]
+    results = await asyncio.gather(*tasks)
+    all_listings: list[dict] = []
+    for batch in results:
+        if isinstance(batch, list):
+            all_listings.extend(batch)
+    return all_listings
 
-        by_id[lid] = listing
-        batch_hashes.add(ch)
-        if ih:
-            batch_img.add(ih)
 
-    candidates = list(by_id.values())
-    if not candidates:
-        logger.info("No new listing candidates after overview + dedupe.")
-        return []
+def _deduplicate(listings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    try:
+        from database.db import make_hash, bulk_is_seen
+        hashes = [make_hash(l) for l in listings]
+        seen_set = bulk_is_seen(hashes)
+        result = []
+        for listing, h in zip(listings, hashes):
+            if h not in seen_set:
+                listing["_hash"] = h
+                result.append(listing)
+        return result
+    except Exception as e:
+        logger.warning("SQLite dedup failed, using JSON fallback: %s", e)
+        return listings
 
-    detail_conc = min(5, max(1, int(cfg.get("detail_concurrency") or 4)))
-    async with build_client() as client:
-        enriched = await enrich_listings_batch(
-            client, candidates, concurrency=detail_conc, cfg=cfg
-        )
 
-    out: list[dict[str, Any]] = []
-    for listing in enriched:
-        try:
-            if passes_filters(listing, cfg):
-                out.append(listing)
-            else:
-                logger.info(
-                    "filter drop: %s | %s",
-                    (listing.get("title") or "")[:60],
-                    listing.get("source"),
-                )
-        except Exception as e:
-            logger.warning("filter error: %s", e)
+async def _enrich_all(
+    listings: list[dict[str, Any]],
+    cfg: dict[str, Any],
+    concurrency: int,
+) -> list[dict[str, Any]]:
+    try:
+        from scraper.detail_page import enrich_listing_detail
+    except ImportError:
+        return listings
 
-    out.sort(key=lambda x: (x.get("price") is None, int(x.get("price") or 0)))
-    return out
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _safe_enrich(listing: dict) -> dict:
+        async with semaphore:
+            try:
+                return await enrich_listing_detail(listing, cfg) or listing
+            except Exception:
+                return listing
+
+    results = await asyncio.gather(*[_safe_enrich(l) for l in listings])
+    return list(results)

@@ -1,5 +1,20 @@
-python-telegram-bot==21.6
-httpx==0.27.2
-beautifulsoup4==4.12.3
-apscheduler==3.10.4
-# Optional (JS-heavy sites): pip install playwright && playwright install chromium
+# Core — existing
+python-telegram-bot>=21.0
+httpx>=0.27.0
+beautifulsoup4>=4.12.0
+apscheduler>=3.10.0
+
+# Database
+# sqlite3 is built-in — no extra package needed
+
+# Dashboard (optional but recommended)
+# Install with: pip install fastapi uvicorn
+# On Termux: pip install fastapi uvicorn --break-system-packages
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# Env loading
+python-dotenv>=1.0.0
+
+# Note: No heavy ML libraries required.
+# AI scoring uses pure Python regex — Termux-friendly.

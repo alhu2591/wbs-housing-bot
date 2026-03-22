@@ -1,91 +1,46 @@
-"""
-Gewobag — WP REST API first, JS-rendered HTML fallback.
-"""
+"""scraper/gewobag.py — Gewobag Berlin scraper."""
+from __future__ import annotations
 import logging
-from scraper.base_scraper import fetch, fetch_json, build_client
-from utils.parser import build_listing, parse_price, parse_rooms
+from typing import Any
+from scraper.base_scraper import fetch_html
 from utils.soup import make_soup
+from utils.parser import parse_price, parse_rooms, parse_size, build_listing
 
 logger = logging.getLogger(__name__)
 SOURCE = "gewobag"
-BASE   = "https://www.gewobag.de"
+BASE_URL = "https://www.gewobag.de/fuer-mieter-und-mietinteressenten/mietangebote/"
 
-
-async def scrape() -> list[dict]:
-    results, seen = [], set()
-    try:
-        async with build_client() as client:
-            for page in range(1, 4):
-                api = (f"{BASE}/wp-json/gewobag/v1/offers"
-                       f"?type=wohnung&wbs=1&per_page=50&page={page}")
-                data = await fetch_json(api, client, direct=True)
-                if not data:
-                    break
-                items = data if isinstance(data, list) else data.get("offers", data.get("results", []))
-                if not items:
-                    break
-                for item in items:
-                    url_raw = item.get("link") or item.get("url") or ""
-                    url = url_raw if url_raw.startswith("http") else BASE + url_raw
-                    if url in seen:
-                        continue
-                    seen.add(url)
-                    title = item.get("title", {})
-                    title_str = title.get("rendered","") if isinstance(title, dict) else str(title or "")
-                    price = None
-                    for k in ("gesamtmiete","warmmiete","price"):
-                        if item.get(k):
-                            price = parse_price(item[k]); break
-                    rooms = None
-                    for k in ("zimmer","rooms"):
-                        if item.get(k):
-                            rooms = parse_rooms(item[k]); break
-                    listing = build_listing(
-                        url=url, title=title_str, price=price, rooms=rooms,
-                        location=item.get("bezirk") or item.get("district") or "Berlin",
-                        description=item.get("beschreibung") or "",
-                        source=SOURCE, base_url=BASE,
-                    )
-                    if listing:
-                        results.append(listing)
-            if results:
-                logger.info("[%s] JSON API: %d", SOURCE, len(results))
-                return results
-
-        # HTML fallback with JS rendering
-        html = await fetch(
-            f"{BASE}/fuer-mieter-und-eigentuemer/mietangebote/?objektart[]=wohnung&wbs=1",
-            render_js=True,
-        )
-        if not html or len(html) < 500:
-            return results
-        soup = make_soup(html)
-        cards = (
-            soup.select("article.angebot, .angebot-item, [class*='angebot']")
-            or soup.select("[class*='listing'], [class*='immo'], [class*='wohnung']")
-            or soup.select("article")
-        )
-        for card in cards:
-            a = card.select_one("a[href]")
-            if not a:
+async def scrape(cfg: dict[str, Any]) -> list[dict]:
+    html = await fetch_html(BASE_URL)
+    if not html:
+        return []
+    soup = make_soup(html)
+    listings = []
+    for card in soup.select("article.angebot-big-layout, .angebot"):
+        try:
+            title_el = card.select_one("h3, .angebot-title")
+            title = title_el.get_text(strip=True) if title_el else ""
+            link_el = card.select_one("a[href]")
+            url = link_el["href"] if link_el else ""
+            if url and not url.startswith("http"):
+                url = "https://www.gewobag.de" + url
+            price_el = card.select_one(".angebot-kosten, .kosten")
+            price = parse_price(price_el.get_text() if price_el else "")
+            loc_el = card.select_one(".angebot-address, .address, .ort")
+            location = loc_el.get_text(strip=True) if loc_el else "Berlin"
+            size_el = card.select_one(".angebot-area, .flaeche")
+            size = parse_size(size_el.get_text() if size_el else "")
+            rooms_el = card.select_one(".angebot-rooms, .zimmer")
+            rooms = parse_rooms(rooms_el.get_text() if rooms_el else "")
+            if not title and not url:
                 continue
-            href = a["href"]
-            url  = href if href.startswith("http") else BASE + href
-            if url in seen or BASE not in url:
-                continue
-            seen.add(url)
-            price = parse_price(next((t.get_text() for t in card.select("[class*='preis'],[class*='price'],[class*='miete']") if t), None))
-            rooms = parse_rooms(next((t.get_text() for t in card.select("[class*='zimmer'],[class*='room']") if t), None))
-            listing = build_listing(
-                url=url,
-                title=(card.select_one("h2,h3,.title") or a).get_text(strip=True),
-                price=price, rooms=rooms,
-                location=next((t.get_text(strip=True) for t in card.select("[class*='bezirk'],[class*='ort'],[class*='district']") if t), "Berlin"),
-                source=SOURCE, base_url=BASE,
-            )
-            if listing:
-                results.append(listing)
-    except Exception as e:
-        logger.error("[%s] %s", SOURCE, e)
-    logger.info("[%s] %d listings", SOURCE, len(results))
-    return results
+            listings.append(build_listing(
+                title=title or "Gewobag Wohnung",
+                url=url, price=price, location=location or "Berlin",
+                size_m2=size, rooms=rooms, source=SOURCE,
+                wbs_label="WBS erforderlich",
+            ))
+        except Exception as e:
+            logger.debug("gewobag card parse error: %s", e)
+    logger.info("gewobag: %d listings", len(listings))
+    return listings

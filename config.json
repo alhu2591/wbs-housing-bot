@@ -1,24 +1,34 @@
 {
   "city": "Berlin",
-  "districts": [],
   "max_price": 700,
   "min_size": 30,
   "rooms": 1,
   "wbs_required": true,
-  "wbs_level": null,
-  "jobcenter_required": false,
-  "wohnungsgilde_required": false,
+  "interval_seconds": 60,
   "interval_minutes": 10,
-  "keywords_include": [],
-  "keywords_exclude": [],
-  "send_images": true,
   "notify_enabled": true,
+  "send_images": true,
+  "max_images": 5,
+  "max_per_cycle": 5,
+  "min_score": 0,
+  "detail_concurrency": 4,
   "wbs_filter": [
     "wbs 100",
     "wbs 140",
+    "wbs 160",
+    "wbs 180",
+    "wbs 200",
     "wbs erforderlich",
     "wohnberechtigungsschein",
-    "geförderte wohnung"
+    "geförderte wohnung",
+    "sozialwohnung"
+  ],
+  "keywords_include": [],
+  "keywords_exclude": [
+    "wg-zimmer",
+    "zwischenmiete",
+    "ferienwohnung",
+    "gewerbe"
   ],
   "sources": [
     "gewobag",
@@ -34,21 +44,15 @@
     "wggesucht",
     "ebay_kleinanzeigen",
     "immowelt",
-    "immonet",
-    "inberlinwohnen",
-    "wohnungsgilde"
+    "immonet"
   ],
-  "max_images": 5,
-  "max_per_cycle": 5,
-  "detail_concurrency": 4,
-  "scrape_concurrency": 5,
-  "respect_robots": true,
-  "use_playwright": false,
-  "scrape_delay_min": 1.0,
-  "scrape_delay_max": 3.0,
-  "source_timeout_seconds": 90,
-  "playwright_timeout_ms": 30000,
-  "exclude_senior_housing": true,
-  "admin_chat_id": "",
-  "notify_admin_on_error": false
+  "jobcenter_rules": {
+    "max_rent": 700,
+    "max_size": 50,
+    "rooms": 1
+  },
+  "dashboard_enabled": true,
+  "dashboard_port": 8080,
+  "notify_admin_on_error": true,
+  "daily_summary_hour": 8
 }

@@ -1,30 +1,60 @@
+"""utils/logger.py — Upgraded logging with DB event handler."""
+from __future__ import annotations
 import logging
 import logging.handlers
 import os
 
-_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOG_DIR = os.getenv("LOG_DIR") or os.path.join(_ROOT_DIR, "logs")
+
+class _DBHandler(logging.Handler):
+    """Writes WARNING+ logs to the SQLite system_events table."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno < logging.WARNING:
+            return
+        try:
+            from database.db import log_event
+            log_event(record.levelname, self.format(record)[:2000])
+        except Exception:
+            pass
 
 
-def setup_logging() -> None:
-    os.makedirs(LOG_DIR, exist_ok=True)
-    log_file = os.path.join(LOG_DIR, "bot.log")
+def setup_logging(level: int = logging.INFO) -> None:
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
-    # Structured: time | level | logger | message (messages may include event=key fields)
-    fmt     = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-    datefmt = "%Y-%m-%d %H:%M:%S"
+    root = logging.getLogger()
+    root.setLevel(level)
 
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if not root.handlers:
+        ch = logging.StreamHandler()
+        ch.setFormatter(fmt)
+        root.addHandler(ch)
+
+    # File handler
     try:
-        handlers.append(
-            logging.handlers.RotatingFileHandler(
-                log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
-            )
+        log_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"
         )
-    except OSError:
-        pass   # read-only filesystem — stream only
+        os.makedirs(log_dir, exist_ok=True)
+        fh = logging.handlers.RotatingFileHandler(
+            os.path.join(log_dir, "bot.log"),
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+    except Exception:
+        pass
 
-    logging.basicConfig(level=logging.INFO, format=fmt, datefmt=datefmt, handlers=handlers)
+    # DB handler for WARNING+
+    db_handler = _DBHandler()
+    db_handler.setLevel(logging.WARNING)
+    db_handler.setFormatter(fmt)
+    root.addHandler(db_handler)
 
-    for noisy in ("httpx", "httpcore", "telegram", "apscheduler", "hpack"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+    # Quiet noisy libraries
+    for lib in ("httpx", "telegram", "apscheduler", "uvicorn", "fastapi"):
+        logging.getLogger(lib).setLevel(logging.WARNING)

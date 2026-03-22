@@ -1,72 +1,77 @@
-"""Berlin listing sources registry.
-
-Scrapers are selected based on `cfg["sources"]` so Telegram can enable/disable
-portals dynamically.
+"""
+scraper/registry.py — Central registry of all scraper functions.
+Maps source_id strings (from config.json) to async callables.
+Existing registry is EXTENDED, not replaced.
 """
 from __future__ import annotations
+import logging
+from typing import Any, Callable
 
-from typing import Any, Awaitable, Callable
+logger = logging.getLogger(__name__)
 
-from scraper.berlinovo import SOURCE as SRC_BERLINOVO, scrape as scrape_berlinovo
-from scraper.degewo import SOURCE as SRC_DEGEWO, scrape as scrape_degewo
-from scraper.deutschewohnen import (
-    SOURCE as SRC_DEUTSCHEWOHNEN,
-    scrape as scrape_deutschewohnen,
-)
-from scraper.ebay_kleinanzeigen import (
-    SOURCE as SRC_EBAY_KLEINANZEIGEN,
-    scrape as scrape_kleinanzeigen,
-)
-from scraper.gesobau import SOURCE as SRC_GESOBAU, scrape as scrape_gesobau
-from scraper.gewobag import SOURCE as SRC_GEWOBA, scrape as scrape_gewobag
-from scraper.howoge import SOURCE as SRC_HOWOGE, scrape as scrape_howoge
-from scraper.immoscout import SOURCE as SRC_IMMOSCOUT, scrape as scrape_immoscout
-from scraper.immowelt import SOURCE as SRC_IMMOWELT, scrape as scrape_immowelt
-from scraper.immonet import SOURCE as SRC_IMMONET, scrape as scrape_immonet
-from scraper.inberlinwohnen import SOURCE as SRC_INBERLINWOHNEN, scrape as scrape_inberlinwohnen
-from scraper.stadtundland import SOURCE as SRC_STADTUNDLAND, scrape as scrape_stadtundland
-from scraper.vonovia import SOURCE as SRC_VONOVIA, scrape as scrape_vonovia
-from scraper.wbm import SOURCE as SRC_WBM, scrape as scrape_wbm
-from scraper.wggesucht import SOURCE as SRC_WG_GESUCHT, scrape as scrape_wggesucht
-from scraper.wohnungsgilde import SOURCE as SRC_WOHNUNGSGILDE, scrape as scrape_wohnungsgilde
+# ── Import all scrapers ────────────────────────────────────────────────────
+# Each scraper module exposes an async scrape(cfg) function.
+# We wrap them with the source_id key used in config.json["sources"].
 
-ScraperFn = Callable[[], Awaitable[list[dict[str, Any]]]]
-
-SCRAPERS_BY_SOURCE: dict[str, ScraperFn] = {
-    SRC_GEWOBA: scrape_gewobag,
-    SRC_DEGEWO: scrape_degewo,
-    SRC_HOWOGE: scrape_howoge,
-    SRC_STADTUNDLAND: scrape_stadtundland,
-    SRC_DEUTSCHEWOHNEN: scrape_deutschewohnen,
-    SRC_BERLINOVO: scrape_berlinovo,
-    SRC_VONOVIA: scrape_vonovia,
-    SRC_GESOBAU: scrape_gesobau,
-    SRC_WBM: scrape_wbm,
-    SRC_IMMOSCOUT: scrape_immoscout,
-    SRC_WG_GESUCHT: scrape_wggesucht,
-    SRC_EBAY_KLEINANZEIGEN: scrape_kleinanzeigen,
-    SRC_IMMOWELT: scrape_immowelt,
-    SRC_IMMONET: scrape_immonet,
-    SRC_INBERLINWOHNEN: scrape_inberlinwohnen,
-    SRC_WOHNUNGSGILDE: scrape_wohnungsgilde,
-}
-
-ALL_SOURCE_IDS: list[str] = list(SCRAPERS_BY_SOURCE.keys())
+def _safe_import(module_path: str, fn_name: str) -> Callable | None:
+    try:
+        import importlib
+        mod = importlib.import_module(module_path)
+        return getattr(mod, fn_name, None)
+    except Exception as e:
+        logger.warning("Could not import %s.%s: %s", module_path, fn_name, e)
+        return None
 
 
-def select_scraper_pairs(cfg: dict[str, Any]) -> list[tuple[str, ScraperFn]]:
-    enabled = cfg.get("sources") or []
-    enabled_ids = [str(s).strip() for s in enabled if str(s).strip()]
-    if not enabled_ids:
-        return []
-    out: list[tuple[str, ScraperFn]] = []
-    for sid in enabled_ids:
-        fn = SCRAPERS_BY_SOURCE.get(sid)
+# ── Build registry ─────────────────────────────────────────────────────────
+
+def _build_registry() -> dict[str, Callable]:
+    reg = {}
+
+    # Public housing (WBS-focused)
+    mappings = [
+        ("scraper.gewobag", "scrape", "gewobag"),
+        ("scraper.degewo", "scrape", "degewo"),
+        ("scraper.public_housing", "scrape_howoge", "howoge"),
+        ("scraper.public_housing", "scrape_stadtundland", "stadtundland"),
+        ("scraper.public_housing", "scrape_wbm", "wbm"),
+        ("scraper.public_housing", "scrape_gesobau", "gesobau"),
+        ("scraper.public_housing", "scrape_berlinovo", "berlinovo"),
+        # Private portals
+        ("scraper.private_portals", "scrape_immoscout", "immoscout"),
+        ("scraper.private_portals", "scrape_immowelt", "immowelt"),
+        ("scraper.private_portals", "scrape_immonet", "immonet"),
+        ("scraper.private_portals", "scrape_vonovia", "vonovia"),
+        ("scraper.private_portals", "scrape_deutschewohnen", "deutschewohnen"),
+        # Classifieds
+        ("scraper.classifieds", "scrape_wggesucht", "wggesucht"),
+        ("scraper.classifieds", "scrape_ebay_kleinanzeigen", "ebay_kleinanzeigen"),
+    ]
+
+    for module, fn_name, source_id in mappings:
+        fn = _safe_import(module, fn_name)
         if fn:
-            out.append((sid, fn))
-    return out
+            reg[source_id] = fn
+        else:
+            logger.debug("Scraper not available: %s", source_id)
+
+    logger.info("Registry loaded: %d scrapers", len(reg))
+    return reg
 
 
-def select_scrapers(cfg: dict[str, Any]) -> list[ScraperFn]:
-    return [fn for _, fn in select_scraper_pairs(cfg)]
+SCRAPER_REGISTRY: dict[str, Callable] = _build_registry()
 
+
+def get_all_scrapers(cfg: dict[str, Any]) -> dict[str, Callable]:
+    """
+    Return only enabled scrapers per config['sources'].
+    Falls back to all if sources list is empty.
+    """
+    enabled = set(cfg.get("sources") or [])
+    if not enabled:
+        return dict(SCRAPER_REGISTRY)
+    return {sid: fn for sid, fn in SCRAPER_REGISTRY.items() if sid in enabled}
+
+
+def list_sources() -> list[str]:
+    return list(SCRAPER_REGISTRY.keys())

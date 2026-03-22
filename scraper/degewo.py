@@ -1,68 +1,46 @@
-"""Degewo — JSON API + HTML fallback."""
+"""scraper/degewo.py — Degewo Berlin scraper."""
+from __future__ import annotations
 import logging
-from scraper.base_scraper import fetch, fetch_json, build_client
-from utils.parser import build_listing, parse_price, parse_rooms
+from typing import Any
+from scraper.base_scraper import fetch_html
 from utils.soup import make_soup
+from utils.parser import parse_price, parse_rooms, parse_size, build_listing
 
 logger = logging.getLogger(__name__)
 SOURCE = "degewo"
-BASE   = "https://immosuche.degewo.de"
+BASE_URL = "https://immosuche.degewo.de/de/properties?type=1&size=&rooms=&price_switch=true&price_radio=null&price_from=null&price_to=null&price_period=monthly&anbieter=degewo&area=berlin&wbs=true"
 
-
-async def scrape() -> list[dict]:
-    results, seen = [], set()
-    try:
-        async with build_client() as client:
-            for api_path in [
-                "/de/properties.json?property_type_id=1&categories[]=WBS&page=1&per_page=50",
-                "/de/search.json?asset_classes[]=1&wbs=1&page=1",
-            ]:
-                data = await fetch_json(f"{BASE}{api_path}", client, direct=True)
-                if not data:
-                    continue
-                items = data if isinstance(data, list) else data.get("results") or data.get("objects") or []
-                for item in items:
-                    path = item.get("path") or item.get("url") or item.get("link") or ""
-                    url  = path if path.startswith("http") else BASE + path
-                    if url in seen or url == BASE:
-                        continue
-                    seen.add(url)
-                    price = next((parse_price(item.get(k)) for k in ("warmmiete","gesamtmiete","totalRent","rent") if item.get(k)), None)
-                    rooms = next((parse_rooms(item.get(k)) for k in ("zimmer","rooms","numberOfRooms") if item.get(k)), None)
-                    listing = build_listing(
-                        url=url, title=item.get("title") or item.get("headline") or "",
-                        price=price, rooms=rooms,
-                        location=item.get("district") or (item.get("address") or {}).get("district") or "Berlin",
-                        description=item.get("text") or "", source=SOURCE, base_url=BASE,
-                    )
-                    if listing:
-                        results.append(listing)
-                if results:
-                    break
-
-        if not results:
-            html = await fetch(f"{BASE}/de/properties?property_type_id=1&categories[]=WBS", render_js=True)
-            if html and len(html) >= 500:
-                soup = make_soup(html)
-                for card in soup.select("[class*='immo'],[class*='listing'],[class*='property'],article"):
-                    a = card.select_one("a[href]")
-                    if not a:
-                        continue
-                    url = a["href"] if a["href"].startswith("http") else BASE + a["href"]
-                    if url in seen:
-                        continue
-                    seen.add(url)
-                    price = parse_price(next((t.get_text() for t in card.select("[class*='miete'],[class*='preis'],[class*='price']") if t), None))
-                    rooms = parse_rooms(next((t.get_text() for t in card.select("[class*='zimmer'],[class*='room']") if t), None))
-                    listing = build_listing(
-                        url=url, title=(card.select_one("h2,h3,.title") or a).get_text(strip=True),
-                        price=price, rooms=rooms,
-                        location=next((t.get_text(strip=True) for t in card.select("[class*='bezirk'],[class*='district']") if t), "Berlin"),
-                        source=SOURCE, base_url=BASE,
-                    )
-                    if listing:
-                        results.append(listing)
-    except Exception as e:
-        logger.error("[%s] %s", SOURCE, e)
-    logger.info("[%s] %d listings", SOURCE, len(results))
-    return results
+async def scrape(cfg: dict[str, Any]) -> list[dict]:
+    html = await fetch_html(BASE_URL)
+    if not html:
+        return []
+    soup = make_soup(html)
+    listings = []
+    for card in soup.select(".article--property, .property-item, article"):
+        try:
+            title_el = card.select_one("h2, h3, .property-title")
+            title = title_el.get_text(strip=True) if title_el else ""
+            link_el = card.select_one("a[href]")
+            url = link_el["href"] if link_el else ""
+            if url and not url.startswith("http"):
+                url = "https://immosuche.degewo.de" + url
+            price_el = card.select_one(".property-price, .price, .kosten")
+            price = parse_price(price_el.get_text() if price_el else "")
+            loc_el = card.select_one(".property-address, .address")
+            location = loc_el.get_text(strip=True) if loc_el else "Berlin"
+            size_el = card.select_one(".property-size, .flaeche")
+            size = parse_size(size_el.get_text() if size_el else "")
+            rooms_el = card.select_one(".property-rooms, .zimmer")
+            rooms = parse_rooms(rooms_el.get_text() if rooms_el else "")
+            if not url:
+                continue
+            listings.append(build_listing(
+                title=title or "Degewo Wohnung",
+                url=url, price=price, location=location or "Berlin",
+                size_m2=size, rooms=rooms, source=SOURCE,
+                wbs_label="WBS erforderlich",
+            ))
+        except Exception as e:
+            logger.debug("degewo card error: %s", e)
+    logger.info("degewo: %d listings", len(listings))
+    return listings

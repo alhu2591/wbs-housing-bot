@@ -1,57 +1,41 @@
-"""Howoge — JS-rendered HTML scraper."""
+"""scraper/howoge.py — Howoge Berlin scraper."""
+from __future__ import annotations
 import logging
-from scraper.base_scraper import fetch
-from utils.parser import build_listing, parse_price, parse_rooms
+from typing import Any
+from scraper.base_scraper import fetch_html
 from utils.soup import make_soup
+from utils.parser import parse_price, parse_rooms, parse_size, build_listing
 
 logger = logging.getLogger(__name__)
 SOURCE = "howoge"
-BASE   = "https://www.howoge.de"
-URLS   = [
-    f"{BASE}/wohnungen-gewerbe/wohnungssuche.html?tx_howoge_apartments[wbs]=1",
-    f"{BASE}/wohnungen-gewerbe/wohnungssuche.html",
-]
+BASE_URL = "https://www.howoge.de/wohnungen-gewerbe/wohnungssuche.html"
 
-
-async def scrape() -> list[dict]:
-    results, seen = [], set()
-    try:
-        for url in URLS:
-            html = await fetch(url, render_js=True)
-            if not html or len(html) < 1000:
+async def scrape(cfg: dict[str, Any]) -> list[dict]:
+    html = await fetch_html(BASE_URL)
+    if not html:
+        return []
+    soup = make_soup(html)
+    listings = []
+    for card in soup.select(".apartment-item, .wohnung-card, .expose"):
+        try:
+            title_el = card.select_one("h2, h3, .title")
+            title = title_el.get_text(strip=True) if title_el else "Howoge Wohnung"
+            link_el = card.select_one("a[href]")
+            url = link_el["href"] if link_el else ""
+            if url and not url.startswith("http"):
+                url = "https://www.howoge.de" + url
+            price = parse_price(card.get_text())
+            location_el = card.select_one(".address, .ort, .standort")
+            location = location_el.get_text(strip=True) if location_el else "Berlin"
+            size = parse_size(card.get_text())
+            rooms = parse_rooms(card.get_text())
+            if not url:
                 continue
-            soup = make_soup(html)
-            cards = (
-                soup.select(".apartment-list__item")
-                or soup.select(".c-apartment-list__item")
-                or soup.select("[class*='apartment']")
-                or soup.select("[class*='wohnung']")
-                or soup.select("[class*='listing']")
-                or soup.select("article")
-            )
-            for card in cards:
-                a = card.select_one("a[href]")
-                if not a:
-                    continue
-                href = a["href"]
-                full_url = href if href.startswith("http") else BASE + href
-                if full_url in seen or BASE not in full_url:
-                    continue
-                seen.add(full_url)
-                price = parse_price(next((t.get_text() for t in card.select("[class*='price'],[class*='preis'],[class*='miete']") if t), None))
-                rooms = parse_rooms(next((t.get_text() for t in card.select("[class*='room'],[class*='zimmer']") if t), None))
-                listing = build_listing(
-                    url=full_url,
-                    title=(card.select_one("h2,h3,[class*='title']") or a).get_text(strip=True),
-                    price=price, rooms=rooms,
-                    location=next((t.get_text(strip=True) for t in card.select("[class*='district'],[class*='bezirk'],[class*='location']") if t), "Berlin"),
-                    source=SOURCE, base_url=BASE,
-                )
-                if listing:
-                    results.append(listing)
-            if results:
-                break
-    except Exception as e:
-        logger.error("[%s] %s", SOURCE, e)
-    logger.info("[%s] %d listings", SOURCE, len(results))
-    return results
+            listings.append(build_listing(
+                title=title, url=url, price=price, location=location,
+                size_m2=size, rooms=rooms, source=SOURCE, wbs_label="WBS möglich",
+            ))
+        except Exception as e:
+            logger.debug("howoge error: %s", e)
+    logger.info("howoge: %d listings", len(listings))
+    return listings

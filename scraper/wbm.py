@@ -1,37 +1,41 @@
-"""WBM Berlin — Wohnungsbaugesellschaft Berlin-Mitte."""
+"""scraper/wbm.py — WBM Berlin scraper."""
+from __future__ import annotations
 import logging
-from scraper.base_scraper import fetch, fetch_json, build_client
-from utils.parser import build_listing, parse_price, parse_rooms
+from typing import Any
+from scraper.base_scraper import fetch_html
 from utils.soup import make_soup
+from utils.parser import parse_price, parse_rooms, parse_size, build_listing
 
 logger = logging.getLogger(__name__)
 SOURCE = "wbm"
-BASE   = "https://www.wbm.de"
-URLS   = [f"{BASE}/wohnungen-in-berlin/angebote/?wbs=1", f"{BASE}/wohnungen-in-berlin/angebote/"]
+BASE_URL = "https://www.wbm.de/wohnungen-berlin/angebote/"
 
-async def scrape() -> list[dict]:
-    results, seen = [], set()
-    try:
-        data = await fetch_json(f"{BASE}/api/apartments?wbs=true&per_page=50")
-        if data:
-            for item in (data if isinstance(data, list) else data.get("results",[])):
-                url = item.get("url",""); url = url if url.startswith("http") else BASE+url
-                if url in seen or url==BASE: continue; seen.add(url)
-                listing = build_listing(url=url,title=item.get("title",""),price=parse_price(item.get("warmmiete") or item.get("rent")),rooms=parse_rooms(item.get("zimmer")),location=item.get("district","Berlin"),source=SOURCE,base_url=BASE)
-                if listing: results.append(listing)
-        for url in URLS:
-            if results: break
-            html = await fetch(url, render_js=False)
-            if not html or len(html)<500: continue
-            soup = make_soup(html)
-            for card in soup.select("[class*='apartment'],[class*='immo'],[class*='listing'],article"):
-                a = card.select_one("a[href]")
-                if not a: continue
-                href=a["href"]; full=href if href.startswith("http") else BASE+href
-                if full in seen or BASE not in full: continue; seen.add(full)
-                listing = build_listing(url=full,title=(card.select_one("h2,h3") or a).get_text(strip=True),price=parse_price(next((t.get_text() for t in card.select("[class*='miete'],[class*='preis'],[class*='price']") if t),None)),rooms=parse_rooms(next((t.get_text() for t in card.select("[class*='zimmer']") if t),None)),source=SOURCE,base_url=BASE)
-                if listing: results.append(listing)
-    except Exception as e:
-        logger.error("[%s] %s", SOURCE, e)
-    logger.info("[%s] %d", SOURCE, len(results))
-    return results
+async def scrape(cfg: dict[str, Any]) -> list[dict]:
+    html = await fetch_html(BASE_URL)
+    if not html:
+        return []
+    soup = make_soup(html)
+    listings = []
+    for card in soup.select(".listitem, .expose-item, article"):
+        try:
+            title_el = card.select_one("h3, h2, .title")
+            title = title_el.get_text(strip=True) if title_el else "WBM Wohnung"
+            link_el = card.select_one("a[href]")
+            url = link_el["href"] if link_el else ""
+            if url and not url.startswith("http"):
+                url = "https://www.wbm.de" + url
+            price = parse_price(card.get_text())
+            location_el = card.select_one(".address, .ort")
+            location = location_el.get_text(strip=True) if location_el else "Berlin"
+            size = parse_size(card.get_text())
+            rooms = parse_rooms(card.get_text())
+            if not url:
+                continue
+            listings.append(build_listing(
+                title=title, url=url, price=price, location=location,
+                size_m2=size, rooms=rooms, source=SOURCE, wbs_label="WBS erforderlich",
+            ))
+        except Exception as e:
+            logger.debug("wbm error: %s", e)
+    logger.info("wbm: %d listings", len(listings))
+    return listings
